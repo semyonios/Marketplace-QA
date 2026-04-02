@@ -1,14 +1,33 @@
+import re
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+PHONE_PATTERN = re.compile(r"^(\+7|8)\d{10}$")
+NON_DIGIT_PATTERN = re.compile(r"\D")
 
 
 class UserBase(BaseModel):
     full_name: str = Field(min_length=3, max_length=255, examples=["Иван Петров"])
-    phone_number: str = Field(min_length=5, max_length=30, examples=["+79991234567"])
+    phone_number: str = Field(max_length=30, examples=["+79991234567"])
     email: EmailStr = Field(examples=["ivan@example.com"])
     birth_date: date = Field(examples=["1995-05-20"])
     city: str = Field(min_length=2, max_length=120, examples=["Moscow"])
+
+    @field_validator("phone_number")
+    @classmethod
+    def normalize_phone_number(cls, value: str) -> str:
+        normalized = NON_DIGIT_PATTERN.sub("", value)
+        if normalized.startswith("7") and len(normalized) == 11:
+            candidate = f"+{normalized}"
+        elif normalized.startswith("8") and len(normalized) == 11:
+            candidate = f"+7{normalized[1:]}"
+        else:
+            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+
+        if not PHONE_PATTERN.fullmatch(candidate):
+            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+        return candidate
 
 
 class UserCreate(UserBase):
@@ -17,10 +36,27 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=3, max_length=255)
-    phone_number: str | None = Field(default=None, min_length=5, max_length=30)
+    phone_number: str | None = Field(default=None, max_length=30)
     email: EmailStr | None = None
     birth_date: date | None = None
     city: str | None = Field(default=None, min_length=2, max_length=120)
+
+    @field_validator("phone_number")
+    @classmethod
+    def normalize_phone_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = NON_DIGIT_PATTERN.sub("", value)
+        if normalized.startswith("7") and len(normalized) == 11:
+            candidate = f"+{normalized}"
+        elif normalized.startswith("8") and len(normalized) == 11:
+            candidate = f"+7{normalized[1:]}"
+        else:
+            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+
+        if not PHONE_PATTERN.fullmatch(candidate):
+            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+        return candidate
 
 
 class UserRead(UserBase):

@@ -1,4 +1,7 @@
+import uuid
+
 from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -50,3 +53,10 @@ class WarehouseProduct(Base):
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
     stocks: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ProcessedEvent(Base):
+    __tablename__ = "processed_events"
+
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    processed_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

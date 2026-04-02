@@ -7,11 +7,13 @@ BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 USER_TOPIC = os.getenv("KAFKA_USER_TOPIC", "user-events")
 PRODUCT_TOPIC = os.getenv("KAFKA_PRODUCT_TOPIC", "products-events")
 STOCK_SUPPLIER_TOPIC = os.getenv("KAFKA_STOCK_SUPPLIER_TOPIC", "stock-supplier-events")
+EVENT_VERSION = 1
 
 producer = Producer({"bootstrap.servers": BOOTSTRAP_SERVERS})
 
 
 def publish_event(topic: str, key: str, payload: dict) -> None:
+    payload.setdefault("event_version", EVENT_VERSION)
     producer.produce(topic, key=key, value=json.dumps(payload, default=str).encode("utf-8"))
     producer.poll(0)
 

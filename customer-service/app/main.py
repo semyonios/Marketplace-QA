@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from collections.abc import Generator
 
@@ -7,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
+from .error_handlers import register_exception_handlers
 from .kafka_consumers import start_consumers, sync_products_from_supplier
 from .kafka_producer import publish_order_created
 from .models import Order, Product, User
@@ -21,6 +23,8 @@ from .schemas import (
     UserCreate,
     UserRead,
 )
+
+logging.basicConfig(level=logging.INFO)
 
 Base.metadata.create_all(bind=engine)
 
@@ -37,6 +41,8 @@ app = FastAPI(
         {"name": "API для покупок", "description": "Оформление покупок и просмотр заказов"},
     ],
 )
+
+register_exception_handlers(app)
 
 
 @app.on_event("startup")

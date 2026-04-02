@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Generator
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
@@ -6,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
+from .error_handlers import register_exception_handlers
 from .kafka_producer import publish_product_event, publish_supplier_stock_event, publish_user_event
 from .models import Product, User, Warehouse, WarehouseProduct
 from .schemas import (
@@ -22,6 +24,8 @@ from .schemas import (
 )
 from .stock_consumer import start_stock_consumer
 
+logging.basicConfig(level=logging.INFO)
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -36,6 +40,8 @@ app = FastAPI(
         {"name": "API для управления складами", "description": "Создание, изменение, удаление и просмотр складов"},
     ],
 )
+
+register_exception_handlers(app)
 
 
 @app.on_event("startup")
