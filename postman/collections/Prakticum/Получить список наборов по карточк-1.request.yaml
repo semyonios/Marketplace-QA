@@ -1,7 +1,0 @@
-$kind: http-request
-name: Получить список наборов по карточке 2
-url: "{{server_url}}/api/v1/kits?cardId=2"
-method: GET
-queryParams:
-  cardId: "2"
-order: 9000

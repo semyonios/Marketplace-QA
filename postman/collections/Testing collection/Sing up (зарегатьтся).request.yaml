@@ -1,4 +1,0 @@
-$kind: http-request
-url: https://ya.ru
-method: GET
-order: 1000

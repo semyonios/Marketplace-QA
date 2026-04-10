@@ -1,7 +1,0 @@
-$kind: http-request
-name: Получить список продуктов по имени набора
-url: "{{server_url}}/api/v1/kits/search?name=В+космос"
-method: GET
-queryParams:
-  name: В+космос
-order: 4000

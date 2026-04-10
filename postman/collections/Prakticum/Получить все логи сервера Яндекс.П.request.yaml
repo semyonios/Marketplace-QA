@@ -1,5 +1,0 @@
-$kind: http-request
-name: Получить все логи сервера Яндекс.Прилавок
-url: "{{server_url}}/api/logs/main"
-method: GET
-order: 6000

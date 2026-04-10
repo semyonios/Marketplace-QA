@@ -1,9 +1,0 @@
-$kind: http-request
-url: "{{base_url}}/posts/1"
-method: GET
-auth:
-  type: apikey
-  credentials:
-    key: app-id
-    value: 0JyYiOQXQQr5H9OEn21312
-order: 1000
