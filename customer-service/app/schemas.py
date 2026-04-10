@@ -25,36 +25,84 @@ class ProductRead(BaseModel):
     created_at: datetime | None
 
 
-class FavoriteRequest(BaseModel):
+class ProductSummary(BaseModel):
+    id: int
+    name: str
+    price: float
+    stocks: int
+
+
+class FavoriteCreate(BaseModel):
     user_id: int = Field(gt=0)
     product_id: int = Field(gt=0)
 
 
-class CartRequest(FavoriteRequest):
-    quantity: int = Field(gt=0)
+class FavoriteRead(BaseModel):
+    id: int
+    user_id: int
+    product: ProductSummary
+    created_at: datetime
 
 
-class PurchaseItem(BaseModel):
+class FavoriteListRead(BaseModel):
+    items: list[FavoriteRead]
+
+
+class CartCreate(BaseModel):
+    user_id: int = Field(gt=0)
     product_id: int = Field(gt=0)
     quantity: int = Field(gt=0)
 
 
-class PurchaseRequest(BaseModel):
+class CartQuantityUpdate(BaseModel):
     user_id: int = Field(gt=0)
-    items: list[PurchaseItem] | None = Field(default=None)
+    quantity: int = Field(gt=0)
+
+
+class CartItemRead(BaseModel):
+    id: int
+    user_id: int
+    product: ProductSummary
+    quantity: int
+    unit_price: float
+    total_price: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class CartRead(BaseModel):
+    items: list[CartItemRead]
+    total_price: float
+
+
+class OrderCreateItem(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: int = Field(gt=0)
+
+
+class OrderCreate(BaseModel):
+    user_id: int = Field(gt=0)
+    items: list[OrderCreateItem] | None = Field(default=None)
+
+
+class OrderItemRead(BaseModel):
+    id: int
+    product: ProductSummary
+    quantity: int
+    unit_price: float
+    total_price: float
+    created_at: datetime
 
 
 class OrderRead(BaseModel):
     id: int
     user_id: int
-    product_id: int
-    quantity: int
-    unit_price: float
-    total_price: float
+    order_number: str
     status: str
+    items: list[OrderItemRead]
+    total_price: float
     created_at: datetime
 
 
 class OrderListRead(BaseModel):
     items: list[OrderRead]
-    total_price: float
