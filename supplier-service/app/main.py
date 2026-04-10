@@ -8,16 +8,16 @@ from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
 from .error_handlers import register_exception_handlers
-from .kafka_producer import publish_product_event, publish_supplier_stock_event, publish_user_event
-from .models import Product, User, Warehouse, WarehouseProduct
+from .kafka_producer import publish_product_event, publish_product_stock_event, publish_supplier_event
+from .models import Product, Supplier, Warehouse, WarehouseProduct
 from .schemas import (
     ProductCreate,
     ProductRead,
     ProductUpdate,
     RestockRequest,
-    UserCreate,
-    UserRead,
-    UserUpdate,
+    SupplierCreate,
+    SupplierRead,
+    SupplierUpdate,
     WarehouseCreate,
     WarehouseRead,
     WarehouseUpdate,
@@ -96,66 +96,66 @@ def healthcheck() -> dict[str, str]:
 
 
 @app.post(
-    "/users",
-    response_model=UserRead,
+    "/suppliers",
+    response_model=SupplierRead,
     status_code=status.HTTP_201_CREATED,
     summary="Создать поставщика",
     description="Создаёт нового поставщика в базе supplier-service",
     tags=["API для управления поставщиками"],
 )
-def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
-    user = User(**user_in.model_dump())
-    db.add(user)
+def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) -> Supplier:
+    supplier = Supplier(**supplier_in.model_dump())
+    db.add(supplier)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Поставщик с таким email или телефоном уже существует") from exc
 
-    db.refresh(user)
-    publish_user_event("USER_CREATED", UserRead.model_validate(user).model_dump(mode="json"))
-    return user
+    db.refresh(supplier)
+    publish_supplier_event("SUPPLIER_CREATED", SupplierRead.model_validate(supplier).model_dump(mode="json"))
+    return supplier
 
 
 @app.get(
-    "/users",
-    response_model=list[UserRead],
+    "/suppliers",
+    response_model=list[SupplierRead],
     summary="Список поставщиков",
     description="Возвращает список всех поставщиков",
     tags=["API для управления поставщиками"],
 )
-def list_users(db: Session = Depends(get_db)) -> list[User]:
-    return list(db.scalars(select(User).order_by(User.id)))
+def list_suppliers(db: Session = Depends(get_db)) -> list[Supplier]:
+    return list(db.scalars(select(Supplier).order_by(Supplier.id)))
 
 
 @app.get(
-    "/users/{user_id}",
-    response_model=UserRead,
+    "/suppliers/{supplier_id}",
+    response_model=SupplierRead,
     summary="Получить поставщика",
     description="Возвращает поставщика по его идентификатору",
     tags=["API для управления поставщиками"],
 )
-def get_user(user_id: int, db: Session = Depends(get_db)) -> User:
-    user = db.get(User, user_id)
-    if not user:
+def get_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Supplier:
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
-    return user
+    return supplier
 
 
 @app.put(
-    "/users/{user_id}",
-    response_model=UserRead,
+    "/suppliers/{supplier_id}",
+    response_model=SupplierRead,
     summary="Обновить поставщика",
     description="Обновляет данные поставщика по идентификатору",
     tags=["API для управления поставщиками"],
 )
-def update_user(user_id: int, user_in: UserUpdate, db: Session = Depends(get_db)) -> User:
-    user = db.get(User, user_id)
-    if not user:
+def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session = Depends(get_db)) -> Supplier:
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
 
-    for field, value in user_in.model_dump(exclude_unset=True).items():
-        setattr(user, field, value)
+    for field, value in supplier_in.model_dump(exclude_unset=True).items():
+        setattr(supplier, field, value)
 
     try:
         db.commit()
@@ -163,28 +163,28 @@ def update_user(user_id: int, user_in: UserUpdate, db: Session = Depends(get_db)
         db.rollback()
         raise HTTPException(status_code=409, detail="Поставщик с таким email или телефоном уже существует") from exc
 
-    db.refresh(user)
-    publish_user_event("USER_UPDATED", UserRead.model_validate(user).model_dump(mode="json"))
-    return user
+    db.refresh(supplier)
+    publish_supplier_event("SUPPLIER_UPDATED", SupplierRead.model_validate(supplier).model_dump(mode="json"))
+    return supplier
 
 
 @app.delete(
-    "/users/{user_id}",
+    "/suppliers/{supplier_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     summary="Удалить поставщика",
     description="Удаляет поставщика по идентификатору",
     tags=["API для управления поставщиками"],
 )
-def delete_user(user_id: int, db: Session = Depends(get_db)) -> Response:
-    user = db.get(User, user_id)
-    if not user:
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response:
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
 
-    payload = UserRead.model_validate(user).model_dump(mode="json")
-    db.delete(user)
+    payload = SupplierRead.model_validate(supplier).model_dump(mode="json")
+    db.delete(supplier)
     db.commit()
-    publish_user_event("USER_DELETED", payload)
+    publish_supplier_event("SUPPLIER_DELETED", payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -271,7 +271,7 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
     for product_id in affected_product_ids:
         product = recalculate_product_stocks(db, product_id)
         if product:
-            publish_supplier_stock_event("STOCK_RESTOCKED", product.id, product.stocks)
+            publish_product_stock_event("STOCK_REPLENISHED", product.id, product.stocks)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -285,7 +285,7 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
     tags=["API для управления товарами"],
 )
 def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> ProductRead:
-    supplier = db.get(User, product_in.supplier_id)
+    supplier = db.get(Supplier, product_in.supplier_id)
     if not supplier:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
 
@@ -338,7 +338,7 @@ def update_product(product_id: int, product_in: ProductUpdate, db: Session = Dep
 
     updates = product_in.model_dump(exclude_unset=True)
     supplier_id = updates.get("supplier_id")
-    if supplier_id is not None and not db.get(User, supplier_id):
+    if supplier_id is not None and not db.get(Supplier, supplier_id):
         raise HTTPException(status_code=404, detail="Поставщик не найден")
 
     for field, value in updates.items():
@@ -386,7 +386,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
 
         recalculated = recalculate_product_stocks(db, item.product_id)
         if recalculated and recalculated.id not in seen_product_ids:
-            publish_supplier_stock_event("STOCK_RESTOCKED", recalculated.id, recalculated.stocks)
+            publish_product_stock_event("STOCK_REPLENISHED", recalculated.id, recalculated.stocks)
             updated_products.append(serialize_product(recalculated))
             seen_product_ids.add(recalculated.id)
 

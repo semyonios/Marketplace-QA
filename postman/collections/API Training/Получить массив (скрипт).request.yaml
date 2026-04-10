@@ -1,0 +1,15 @@
+$kind: http-request
+url: "{{base_url}}/posts"
+method: GET
+scripts:
+  - type: afterResponse
+    code: |
+      const posts = pm.response.json();
+
+      pm.test("Posts array is not empty", function () {
+          pm.expect(posts.length).to.be.above(0);
+      });
+
+      pm.environment.set("post_id", posts[0].id);
+    language: text/javascript
+order: 4000

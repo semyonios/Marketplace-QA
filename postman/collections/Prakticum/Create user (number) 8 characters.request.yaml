@@ -1,0 +1,14 @@
+$kind: http-request
+url: "{{server_url}}/api/v1/users"
+method: POST
+body:
+  type: text
+  content: |-
+    {
+    "firstName": "Леонид",
+    "phone": "89998887",
+    "address": "г. Москва, ул. Ленина, д. 1, кв. 6",
+    "email": "leonid@yandex.ru",
+    "comment": "Звонить в домофон"
+    }
+order: 26000

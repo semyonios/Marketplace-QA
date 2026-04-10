@@ -1,0 +1,17 @@
+$kind: http-request
+url: "{{server_url}}/api/v1/kits"
+method: POST
+body:
+  type: json
+  content: |-
+    {
+           "name": "Мой набор",
+           "card": {
+               "id": 1,
+               "name": "Каша из топора"
+           },
+           "productsList": null,
+           "id": 7,
+           "productsCount": 0
+       }
+order: 29000

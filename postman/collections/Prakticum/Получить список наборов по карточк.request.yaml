@@ -1,0 +1,16 @@
+$kind: http-request
+name: Получить список наборов по карточке
+url: "{{server_url}}/api/v1/kits?cardId=1"
+method: GET
+queryParams:
+  cardId: "1"
+scripts:
+  - type: afterResponse
+    code: |-
+      
+      // 
+      pm.test("Status code is 200", function () {
+          pm.response.to.have.status(200);
+      });
+    language: text/javascript
+order: 1000

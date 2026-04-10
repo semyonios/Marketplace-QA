@@ -1,0 +1,12 @@
+$kind: http-request
+url: https://jsonplaceholder.typicode.com/posts/1
+method: PATCH
+body:
+  type: json
+  content: |-
+    {
+      "title": "patched"
+    }
+auth:
+  type: noauth
+order: 4000

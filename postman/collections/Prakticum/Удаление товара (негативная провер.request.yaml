@@ -1,0 +1,7 @@
+$kind: http-request
+name: Удаление товара (негативная проверка)
+url: "{{server_url}}/api/v1/kits/100500"
+method: DELETE
+auth:
+  type: noauth
+order: 18000

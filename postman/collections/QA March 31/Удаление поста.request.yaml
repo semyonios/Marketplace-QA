@@ -1,0 +1,6 @@
+$kind: http-request
+url: https://jsonplaceholder.typicode.com/posts/1
+method: DELETE
+auth:
+  type: noauth
+order: 5000

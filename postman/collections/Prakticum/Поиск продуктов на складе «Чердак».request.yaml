@@ -1,0 +1,14 @@
+$kind: http-request
+name: Поиск продуктов на складе «Чердак» по id
+url: "{{server_url}}/attic/calculate.xml"
+method: POST
+body:
+  type: xml
+  content: |-
+    <?xml version="1.0" encoding="UTF-8"?>
+    <InputModel>
+      <deliveryTime>9</deliveryTime>
+      <product id="4" quantity="2" />
+      <product id="48" quantity="2" />
+    </InputModel>
+order: 13000

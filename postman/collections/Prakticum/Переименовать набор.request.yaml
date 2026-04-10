@@ -1,0 +1,12 @@
+$kind: http-request
+url: "{{server_url}}/api/v1/kits/7"
+method: PUT
+body:
+  type: json
+  content: |-
+    {
+        "name": "Переименованный набор"
+    }
+auth:
+  type: noauth
+order: 5000

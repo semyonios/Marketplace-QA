@@ -1,0 +1,7 @@
+$kind: http-request
+url: "{{server_url}}/api/logs/secondary"
+method: GET
+body:
+  type: json
+  content: ""
+order: 15000

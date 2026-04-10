@@ -1,0 +1,13 @@
+$kind: http-request
+url: "{{server_url}}/api/v1/products/kits"
+method: POST
+body:
+  type: json
+  content: |
+    {
+        "ids": [
+            39,
+            34
+        ]
+    }
+order: 12000

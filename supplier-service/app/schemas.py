@@ -7,7 +7,7 @@ PHONE_PATTERN = re.compile(r"^(\+7|8)\d{10}$")
 NON_DIGIT_PATTERN = re.compile(r"\D")
 
 
-class UserBase(BaseModel):
+class SupplierBase(BaseModel):
     full_name: str = Field(min_length=3, max_length=255, examples=["Иван Петров"])
     phone_number: str = Field(max_length=30, examples=["+79991234567"])
     email: EmailStr = Field(examples=["ivan@example.com"])
@@ -30,11 +30,11 @@ class UserBase(BaseModel):
         return candidate
 
 
-class UserCreate(UserBase):
+class SupplierCreate(SupplierBase):
     pass
 
 
-class UserUpdate(BaseModel):
+class SupplierUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=3, max_length=255)
     phone_number: str | None = Field(default=None, max_length=30)
     email: EmailStr | None = None
@@ -59,7 +59,7 @@ class UserUpdate(BaseModel):
         return candidate
 
 
-class UserRead(UserBase):
+class SupplierRead(SupplierBase):
     id: int
     created_at: datetime
     updated_at: datetime

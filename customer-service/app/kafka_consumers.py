@@ -15,10 +15,10 @@ from .database import SessionLocal
 from .models import Product
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-PRODUCT_TOPIC = os.getenv("KAFKA_PRODUCT_TOPIC", "products-events")
-STOCK_SUPPLIER_TOPIC = os.getenv("KAFKA_STOCK_SUPPLIER_TOPIC", "stock-supplier-events")
-GROUP_ID = os.getenv("KAFKA_PRODUCTS_GROUP_ID", "customer-products-consumer-group")
-SUPPLIER_PRODUCTS_URL = os.getenv("SUPPLIER_PRODUCTS_URL", "http://user-service:8000/products")
+PRODUCT_TOPIC = os.getenv("KAFKA_PRODUCT_TOPIC", "product-events")
+PRODUCT_STOCK_TOPIC = os.getenv("KAFKA_PRODUCT_STOCK_TOPIC", "product-stock-events")
+GROUP_ID = os.getenv("KAFKA_PRODUCTS_GROUP_ID", "customer-product-events-consumer-group")
+SUPPLIER_PRODUCTS_URL = os.getenv("SUPPLIER_PRODUCTS_URL", "http://supplier-service:8000/products")
 MAX_RETRIES = 3
 
 logger = logging.getLogger(__name__)
@@ -163,8 +163,11 @@ def process_message(raw_message: bytes, topic: str) -> None:
                 logger.info("Customer consumer: event skipped topic=%s reason=unsupported_event_type", topic)
             return
 
-        total_quantity = data.get("total_quantity", data.get("stocks"))
-        changed = upsert_product_stocks(db, data["product_id"], total_quantity)
+        total_available_stocks = data.get("total_quantity", data.get("stocks"))
+        changed = upsert_product_stocks(db, data["product_id"], total_available_stocks)
+        if not changed:
+            sync_products_from_supplier()
+            changed = upsert_product_stocks(db, data["product_id"], total_available_stocks)
         logger.info(
             "Customer consumer: event %s topic=%s product_id=%s",
             "processed" if changed else "skipped",
@@ -177,7 +180,7 @@ def process_message(raw_message: bytes, topic: str) -> None:
 def consume_forever() -> None:
     while True:
         try:
-            consumer.subscribe([PRODUCT_TOPIC, STOCK_SUPPLIER_TOPIC])
+            consumer.subscribe([PRODUCT_TOPIC, PRODUCT_STOCK_TOPIC])
             while True:
                 message = consumer.poll(1.0)
                 if message is None:

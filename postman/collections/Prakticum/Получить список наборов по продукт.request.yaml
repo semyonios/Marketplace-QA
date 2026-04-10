@@ -1,0 +1,14 @@
+$kind: http-request
+name: Получить список наборов по продуктам
+url: "{{server_url}}/api/v1/products/kits"
+method: POST
+body:
+  type: json
+  content: |-
+    {
+        "ids": [
+            1,
+            22
+        ]
+    }
+order: 3000

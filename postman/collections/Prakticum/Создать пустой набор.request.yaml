@@ -1,0 +1,13 @@
+$kind: http-request
+url: "{{server_url}}/api/v1/kits?cardId=1"
+method: POST
+queryParams:
+  cardId: "1"
+body:
+  type: json
+  content: |-
+    {
+        "cardId": 1, 
+        "name": "В космос" 
+    }
+order: 2000

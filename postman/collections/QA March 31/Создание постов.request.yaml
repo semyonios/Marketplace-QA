@@ -1,0 +1,14 @@
+$kind: http-request
+url: https://jsonplaceholder.typicode.com/posts
+method: POST
+body:
+  type: json
+  content: |-
+    {
+      "title": "test",
+      "body": "hello",
+      "userId": 1
+    }
+auth:
+  type: noauth
+order: 2000

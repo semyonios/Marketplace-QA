@@ -4,7 +4,7 @@
 
 - `supplier-service` - поставщики, товары, склады и остатки
 - `customer-service` - покупатели, избранное, корзина и покупка
-- `audit-consumer` - аудит пользовательских событий
+- `audit-consumer` - аудит событий поставщиков
 - `kafka-broker` - обмен событиями между сервисами
 - `supplier-postgres` - база поставщика `supplier_db`
 - `customer-postgres` - база покупателя `customer_db`
@@ -36,11 +36,11 @@
 
 ### Поставщики
 
-- `POST /users`
-- `GET /users`
-- `GET /users/{id}`
-- `PUT /users/{id}`
-- `DELETE /users/{id}`
+- `POST /suppliers`
+- `GET /suppliers`
+- `GET /suppliers/{id}`
+- `PUT /suppliers/{id}`
+- `DELETE /suppliers/{id}`
 
 ### Товары
 
@@ -77,10 +77,10 @@
 
 ## Kafka topics
 
-- `user-events`
-- `products-events`
+- `supplier-events`
+- `product-events`
 - `order-events`
-- `stock-supplier-events`
+- `product-stock-events`
 
 ## Логика остатков
 
@@ -93,8 +93,8 @@
 - `POST /cart` не даст добавить товаров больше, чем доступно в текущих `stocks`, и будет обновлять одну запись корзины для каждого товара
 - `POST /purchase` можно вызвать сразу с товарами в `items` без предварительного добавления в корзину
 - покупка тоже проверяет доступные `stocks` и отправляет только `ORDER_CREATED` в `order-events`
-- `supplier-service` уменьшает остаток и публикует новое значение в `stock-supplier-events`
-- `customer-service` обновляет локальную копию товаров по `stock-supplier-events`
+- `supplier-service` уменьшает остаток и публикует новое значение в `product-stock-events`
+- `customer-service` обновляет локальную копию товаров по `product-stock-events`
 
 ## Запуск
 
