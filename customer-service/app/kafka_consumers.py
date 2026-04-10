@@ -53,6 +53,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
         and existing.description == payload.get("description")
         and existing.price == payload["price"]
         and existing.stocks == payload["stocks"]
+        and existing.is_active == payload.get("is_active", True)
+        and existing.is_archived == payload.get("is_archived", False)
         and existing.created_at == created_at
     ):
         return False
@@ -63,6 +65,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
         "description": payload.get("description"),
         "price": payload["price"],
         "stocks": payload["stocks"],
+        "is_active": payload.get("is_active", True),
+        "is_archived": payload.get("is_archived", False),
         "created_at": created_at,
     }
     stmt = insert(Product).values(**values)
@@ -74,6 +78,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
                 "description": stmt.excluded.description,
                 "price": stmt.excluded.price,
                 "stocks": stmt.excluded.stocks,
+                "is_active": stmt.excluded.is_active,
+                "is_archived": stmt.excluded.is_archived,
                 "created_at": stmt.excluded.created_at,
             },
         )

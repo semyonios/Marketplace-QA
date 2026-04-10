@@ -30,13 +30,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         detail = _format_validation_error(exc)
         logger.warning("Validation error on %s %s: %s", request.method, request.url.path, detail)
-        return JSONResponse(status_code=422, content={"detail": detail, "error_type": "VALIDATION_ERROR"})
+        return JSONResponse(status_code=400, content={"detail": detail, "error_type": "VALIDATION_ERROR"})
 
     @app.exception_handler(ValidationError)
     async def validation_exception_handler(request: Request, exc: ValidationError) -> JSONResponse:
         detail = _format_validation_error(exc)
         logger.warning("Validation error on %s %s: %s", request.method, request.url.path, detail)
-        return JSONResponse(status_code=422, content={"detail": detail, "error_type": "VALIDATION_ERROR"})
+        return JSONResponse(status_code=400, content={"detail": detail, "error_type": "VALIDATION_ERROR"})
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

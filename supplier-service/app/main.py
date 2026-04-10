@@ -2,7 +2,7 @@ import logging
 from collections.abc import Generator
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,20 @@ from .stock_consumer import start_stock_consumer
 
 logging.basicConfig(level=logging.INFO)
 
-Base.metadata.create_all(bind=engine)
+
+def ensure_supplier_schema() -> None:
+    Base.metadata.create_all(bind=engine)
+
+    inspector = inspect(engine)
+    if "products" not in inspector.get_table_names():
+        return
+
+    product_columns = {column["name"] for column in inspector.get_columns("products")}
+    with engine.begin() as connection:
+        if "is_active" not in product_columns:
+            connection.execute(text("ALTER TABLE products ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+        if "is_archived" not in product_columns:
+            connection.execute(text("ALTER TABLE products ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
 
 app = FastAPI(
     title="Supplier Service",
@@ -46,6 +59,7 @@ register_exception_handlers(app)
 
 @app.on_event("startup")
 def startup() -> None:
+    ensure_supplier_schema()
     start_stock_consumer()
 
 
@@ -66,6 +80,8 @@ def serialize_product(product: Product) -> ProductRead:
         name=product.name,
         description=product.description,
         price=product.price,
+        is_active=product.is_active,
+        is_archived=product.is_archived,
         stocks=product.stocks,
         total_price=round(product.price * product.stocks, 2),
         created_at=product.created_at,
@@ -83,6 +99,11 @@ def recalculate_product_stocks(db: Session, product_id: int) -> Product | None:
     db.commit()
     db.refresh(product)
     return product
+
+
+def ensure_product_state(is_active: bool, is_archived: bool) -> None:
+    if is_archived and is_active:
+        raise HTTPException(status_code=409, detail="product is archived")
 
 
 @app.get(
@@ -287,7 +308,9 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
 def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> ProductRead:
     supplier = db.get(Supplier, product_in.supplier_id)
     if not supplier:
-        raise HTTPException(status_code=404, detail="Поставщик не найден")
+        raise HTTPException(status_code=404, detail="supplier not found")
+
+    ensure_product_state(product_in.is_active, product_in.is_archived)
 
     product = Product(**product_in.model_dump(), stocks=0)
     db.add(product)
@@ -320,7 +343,7 @@ def list_products(db: Session = Depends(get_db)) -> list[ProductRead]:
 def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="Товар не найден")
+        raise HTTPException(status_code=404, detail="product not found")
     return serialize_product(product)
 
 
@@ -334,12 +357,16 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
 def update_product(product_id: int, product_in: ProductUpdate, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="Товар не найден")
+        raise HTTPException(status_code=404, detail="product not found")
 
     updates = product_in.model_dump(exclude_unset=True)
     supplier_id = updates.get("supplier_id")
     if supplier_id is not None and not db.get(Supplier, supplier_id):
-        raise HTTPException(status_code=404, detail="Поставщик не найден")
+        raise HTTPException(status_code=404, detail="supplier not found")
+
+    next_is_active = updates.get("is_active", product.is_active)
+    next_is_archived = updates.get("is_archived", product.is_archived)
+    ensure_product_state(next_is_active, next_is_archived)
 
     for field, value in updates.items():
         setattr(product, field, value)
@@ -362,7 +389,7 @@ def update_product(product_id: int, product_in: ProductUpdate, db: Session = Dep
 def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session = Depends(get_db)) -> list[ProductRead]:
     warehouse = db.get(Warehouse, warehouse_id)
     if not warehouse:
-        raise HTTPException(status_code=404, detail="Склад не найден")
+        raise HTTPException(status_code=404, detail="warehouse not found")
 
     updated_products: list[ProductRead] = []
     seen_product_ids: set[int] = set()
@@ -370,7 +397,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     for item in restock_in.items:
         product = db.get(Product, item.product_id)
         if not product:
-            raise HTTPException(status_code=404, detail=f"Товар {item.product_id} не найден")
+            raise HTTPException(status_code=404, detail="product not found")
 
         stock_row = db.scalar(
             select(WarehouseProduct).where(
@@ -404,7 +431,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
 def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="Товар не найден")
+        raise HTTPException(status_code=404, detail="product not found")
 
     stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
     for row in stock_rows:

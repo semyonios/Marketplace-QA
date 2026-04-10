@@ -25,6 +25,8 @@ class Product(Base):
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     price: Mapped[float] = mapped_column(Float, nullable=False)
     stocks: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

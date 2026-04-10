@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Customer Service",
     description="Покупатели, избранное, корзина и заказы с синхронизацией товаров через Kafka.",
-    version="2.0.0",
+    version="3.0.0",
     openapi_tags=[
         {"name": "Служебное API", "description": "Технические и health-ручки сервиса покупателя"},
         {"name": "API для управления покупателями", "description": "Создание и просмотр покупателей"},
@@ -67,6 +67,13 @@ def ensure_customer_schema() -> None:
             connection.execute(text("ALTER TABLE orders ALTER COLUMN product_id DROP NOT NULL"))
             connection.execute(text("ALTER TABLE orders ALTER COLUMN quantity DROP NOT NULL"))
 
+    product_columns = {column["name"] for column in inspector.get_columns("products")} if "products" in inspector.get_table_names() else set()
+    with engine.begin() as connection:
+        if "is_active" not in product_columns:
+            connection.execute(text("ALTER TABLE products ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+        if "is_archived" not in product_columns:
+            connection.execute(text("ALTER TABLE products ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
+
 
 @app.on_event("startup")
 def startup() -> None:
@@ -90,6 +97,8 @@ def serialize_product(product: Product) -> ProductRead:
         description=product.description,
         price=product.price,
         stocks=product.stocks,
+        is_active=product.is_active,
+        is_archived=product.is_archived,
         total_price=round(product.price * product.stocks, 2),
         created_at=product.created_at,
     )
@@ -101,6 +110,8 @@ def serialize_product_summary(product: Product) -> ProductSummary:
         name=product.name,
         price=product.price,
         stocks=product.stocks,
+        is_active=product.is_active,
+        is_archived=product.is_archived,
     )
 
 
@@ -313,6 +324,7 @@ def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
 )
 def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_in.user_id, cart_in.product_id)
+    ensure_product_can_be_purchased(product)
     cart_item = db.scalar(
         select(CartItem).where(CartItem.user_id == cart_in.user_id, CartItem.product_id == cart_in.product_id)
     )
@@ -340,9 +352,10 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
 )
 def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_update.user_id, product_id)
+    ensure_product_can_be_purchased(product)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == cart_update.user_id, CartItem.product_id == product_id))
     if not cart_item:
-        raise HTTPException(status_code=404, detail="Товар не найден в корзине")
+        raise HTTPException(status_code=404, detail="cart item not found")
 
     ensure_requested_quantity_available(cart_update.quantity, product.stocks, product_id)
     cart_item.quantity = cart_update.quantity
@@ -363,7 +376,7 @@ def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db
     validate_user(db, user_id)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == user_id, CartItem.product_id == product_id))
     if not cart_item:
-        raise HTTPException(status_code=404, detail="Товар не найден в корзине")
+        raise HTTPException(status_code=404, detail="cart item not found")
     db.delete(cart_item)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -420,6 +433,27 @@ def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderR
     return serialize_order(db, order)
 
 
+@app.post(
+    "/orders/{order_id}/cancel",
+    response_model=OrderRead,
+    summary="Отменить заказ",
+    description="Меняет статус заказа на cancelled, если заказ ещё не был отменён ранее.",
+    tags=["API для заказов"],
+)
+def cancel_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> OrderRead:
+    validate_user(db, user_id)
+    order = db.scalar(select(Order).where(Order.id == order_id, Order.user_id == user_id, Order.order_number.is_not(None)))
+    if not order:
+        raise HTTPException(status_code=404, detail="order not found")
+    if order.status == "cancelled":
+        raise HTTPException(status_code=409, detail="order is already cancelled")
+
+    order.status = "cancelled"
+    db.commit()
+    db.refresh(order)
+    return serialize_order(db, order)
+
+
 @app.get(
     "/orders",
     response_model=OrderListRead,
@@ -450,7 +484,7 @@ def get_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> Ord
     validate_user(db, user_id)
     order = db.scalar(select(Order).where(Order.id == order_id, Order.user_id == user_id, Order.order_number.is_not(None)))
     if not order:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
+        raise HTTPException(status_code=404, detail="order not found")
     return serialize_order(db, order)
 
 
@@ -475,28 +509,33 @@ def aggregate_order_items(items: list[OrderCreateItem]) -> list[OrderCreateItem]
 def ensure_order_items_available(db: Session, items: list[OrderCreateItem]) -> None:
     for item in items:
         product = get_existing_product(db, item.product_id)
+        ensure_product_can_be_purchased(product)
         ensure_requested_quantity_available(item.quantity, product.stocks, item.product_id)
 
 
 def ensure_requested_quantity_available(requested_quantity: int, available_stocks: int, product_id: int) -> None:
     if requested_quantity > available_stocks:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Недостаточно товара {product_id} на складе. Доступно: {available_stocks}",
-        )
+        raise HTTPException(status_code=409, detail="insufficient stock")
+
+
+def ensure_product_can_be_purchased(product: Product) -> None:
+    if product.is_archived:
+        raise HTTPException(status_code=409, detail="product is archived")
+    if not product.is_active:
+        raise HTTPException(status_code=409, detail="product is inactive")
 
 
 def validate_user(db: Session, user_id: int) -> User:
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=404, detail="user not found")
     return user
 
 
 def get_existing_product(db: Session, product_id: int) -> Product:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="Товар не найден")
+        raise HTTPException(status_code=404, detail="product not found")
     return product
 
 

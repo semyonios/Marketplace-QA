@@ -21,6 +21,8 @@ class ProductRead(BaseModel):
     description: str | None
     price: float
     stocks: int
+    is_active: bool
+    is_archived: bool
     total_price: float
     created_at: datetime | None
 
@@ -30,6 +32,8 @@ class ProductSummary(BaseModel):
     name: str
     price: float
     stocks: int
+    is_active: bool
+    is_archived: bool
 
 
 class FavoriteCreate(BaseModel):

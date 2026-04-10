@@ -69,9 +69,19 @@ class SupplierRead(SupplierBase):
 
 class ProductBase(BaseModel):
     supplier_id: int = Field(examples=[1], gt=0)
-    name: str = Field(min_length=2, max_length=255, examples=["Ноутбук"])
+    name: str = Field(min_length=1, max_length=255, examples=["Ноутбук"])
     description: str | None = Field(default=None, max_length=1000, examples=["Игровой ноутбук"])
-    price: float = Field(ge=0, examples=[999.99])
+    price: float = Field(gt=0, examples=[999.99])
+    is_active: bool = Field(default=True, examples=[True])
+    is_archived: bool = Field(default=False, examples=[False])
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("product name must not be empty")
+        return normalized
 
 
 class ProductCreate(ProductBase):
@@ -80,9 +90,21 @@ class ProductCreate(ProductBase):
 
 class ProductUpdate(BaseModel):
     supplier_id: int | None = Field(default=None, gt=0)
-    name: str | None = Field(default=None, min_length=2, max_length=255)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1000)
-    price: float | None = Field(default=None, ge=0)
+    price: float | None = Field(default=None, gt=0)
+    is_active: bool | None = None
+    is_archived: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("product name must not be empty")
+        return normalized
 
 
 class ProductRead(ProductBase):
