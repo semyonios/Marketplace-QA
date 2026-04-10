@@ -6,11 +6,11 @@ import time
 from confluent_kafka import Consumer
 
 from .database import Base, SessionLocal, engine
-from .models import UserEvent
+from .models import SupplierEvent
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-TOPIC = os.getenv("KAFKA_TOPIC", "user-events")
-GROUP_ID = os.getenv("KAFKA_GROUP_ID", "audit-consumer-group")
+TOPIC = os.getenv("KAFKA_SUPPLIER_TOPIC", "supplier-events")
+GROUP_ID = os.getenv("KAFKA_GROUP_ID", "audit-supplier-events-consumer-group")
 MAX_RETRIES = 3
 
 logging.basicConfig(level=logging.INFO)
@@ -38,15 +38,15 @@ def process_message(raw_message: bytes) -> None:
 
     with SessionLocal() as db:
         db.add(
-            UserEvent(
+            SupplierEvent(
                 event_type=data["event_type"],
-                user_id=payload["id"],
+                supplier_id=payload["id"],
                 payload=payload,
             )
         )
         db.commit()
 
-    logger.info("Audit consumer: event processed topic=%s user_id=%s", TOPIC, payload["id"])
+    logger.info("Audit consumer: event processed topic=%s supplier_id=%s", TOPIC, payload["id"])
 
 
 

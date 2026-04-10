@@ -10,18 +10,11 @@ logger = logging.getLogger(__name__)
 ERROR_MESSAGES: dict[str, str] = {
     "validation_error": "Validation failed",
     "internal_error": "Internal server error",
-    "user_not_found": "User not found",
-    "user_conflict": "User with this email already exists",
+    "supplier_not_found": "Supplier not found",
+    "supplier_conflict": "Supplier with this email or phone already exists",
+    "warehouse_not_found": "Warehouse not found",
     "product_not_found": "Product not found",
-    "favorite_not_found": "Favorite item not found",
-    "cart_item_not_found": "Cart item not found",
-    "cart_is_empty": "Cart is empty and no order items were provided",
-    "invalid_quantity": "Quantity must be greater than zero",
-    "insufficient_stock": "Insufficient stock",
-    "product_inactive": "Product is inactive",
     "product_archived": "Product is archived",
-    "order_not_found": "Order not found",
-    "order_already_cancelled": "Order is already cancelled",
 }
 
 
@@ -29,10 +22,8 @@ def _format_validation_error(exc: RequestValidationError | ValidationError) -> s
     messages: list[str] = []
     for error in exc.errors():
         location = ".".join(str(part) for part in error.get("loc", []) if part != "body")
-        raw_message = error.get("msg", "Validation error")
-        if "greater than 0" in raw_message:
-            raw_message = ERROR_MESSAGES["invalid_quantity"]
-        messages.append(f"{location}: {raw_message}" if location else raw_message)
+        message = error.get("msg", "Validation error")
+        messages.append(f"{location}: {message}" if location else message)
     return "; ".join(messages) or ERROR_MESSAGES["validation_error"]
 
 

@@ -71,17 +71,17 @@ services:
 
   supplier-service:
     build:
-      context: ./user-service
+      context: ./supplier-service
     container_name: supplier-service
     hostname: supplier-service
     environment:
       DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
       KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
-      KAFKA_USER_TOPIC: user-events
-      KAFKA_PRODUCT_TOPIC: products-events
-      KAFKA_STOCK_SUPPLIER_TOPIC: stock-supplier-events
+      KAFKA_SUPPLIER_TOPIC: supplier-events
+      KAFKA_PRODUCT_TOPIC: product-events
+      KAFKA_PRODUCT_STOCK_TOPIC: product-stock-events
       KAFKA_ORDER_TOPIC: order-events
-      KAFKA_ORDER_GROUP_ID: supplier-order-consumer-group
+      KAFKA_ORDER_GROUP_ID: supplier-order-events-consumer-group
     ports:
       - "8000:8000"
     depends_on:
@@ -98,10 +98,10 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://app:app@customer-postgres:5432/customer_db
       KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
-      KAFKA_PRODUCT_TOPIC: products-events
+      KAFKA_PRODUCT_TOPIC: product-events
       KAFKA_ORDER_TOPIC: order-events
-      KAFKA_STOCK_SUPPLIER_TOPIC: stock-supplier-events
-      KAFKA_PRODUCTS_GROUP_ID: customer-products-consumer-group
+      KAFKA_PRODUCT_STOCK_TOPIC: product-stock-events
+      KAFKA_PRODUCTS_GROUP_ID: customer-product-events-consumer-group
       SUPPLIER_PRODUCTS_URL: http://supplier-service:8000/products
     ports:
       - "8001:8001"
@@ -121,8 +121,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
       KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
-      KAFKA_TOPIC: user-events
-      KAFKA_GROUP_ID: audit-consumer-group
+      KAFKA_SUPPLIER_TOPIC: supplier-events
+      KAFKA_GROUP_ID: audit-supplier-events-consumer-group
     depends_on:
       supplier-postgres:
         condition: service_healthy

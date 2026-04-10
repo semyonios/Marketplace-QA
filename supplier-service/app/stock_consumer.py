@@ -12,12 +12,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
-from .kafka_producer import publish_supplier_stock_event
+from .kafka_producer import publish_product_stock_event
 from .models import ProcessedEvent, Product, WarehouseProduct
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC = os.getenv("KAFKA_ORDER_TOPIC", "order-events")
-GROUP_ID = os.getenv("KAFKA_ORDER_GROUP_ID", "supplier-order-consumer-group")
+GROUP_ID = os.getenv("KAFKA_ORDER_GROUP_ID", "supplier-order-events-consumer-group")
 MAX_RETRIES = 3
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def reserve_event_id(db: Session, event_id: str | None) -> bool:
 
 
 
-def apply_order(db: Session, product_id: int, order_quantity: int) -> tuple[bool, int] | tuple[bool, None]:
+def apply_order_to_inventory(db: Session, product_id: int, ordered_quantity: int) -> tuple[bool, int] | tuple[bool, None]:
     product = db.get(Product, product_id)
     if not product:
         return False, None
@@ -66,14 +66,14 @@ def apply_order(db: Session, product_id: int, order_quantity: int) -> tuple[bool
     if not rows:
         return False, None
 
-    remaining = order_quantity
+    remaining_quantity = ordered_quantity
     initial_stocks = product.stocks
     for row in rows:
-        if remaining <= 0:
+        if remaining_quantity <= 0:
             break
-        taken = min(row.stocks, remaining)
+        taken = min(row.stocks, remaining_quantity)
         row.stocks -= taken
-        remaining -= taken
+        remaining_quantity -= taken
 
     fresh_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
     product.stocks = sum(row.stocks for row in fresh_rows)
@@ -102,11 +102,11 @@ def process_message(raw_message: bytes) -> tuple[bool, str]:
             logger.info("event skipped topic=%s event_id=%s", TOPIC, data.get("event_id"))
             return False, "skipped"
 
-        changed, total_quantity = apply_order(db, data["product_id"], data["quantity"])
+        changed, total_quantity = apply_order_to_inventory(db, data["product_id"], data["quantity"])
         db.commit()
 
     if changed and total_quantity is not None:
-        publish_supplier_stock_event("STOCK_DECREASED_BY_ORDER", data["product_id"], total_quantity)
+        publish_product_stock_event("STOCK_DECREASED_BY_ORDER", data["product_id"], total_quantity)
 
     logger.info(
         "event %s topic=%s product_id=%s",

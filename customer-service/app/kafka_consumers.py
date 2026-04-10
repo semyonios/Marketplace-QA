@@ -15,10 +15,10 @@ from .database import SessionLocal
 from .models import Product
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-PRODUCT_TOPIC = os.getenv("KAFKA_PRODUCT_TOPIC", "products-events")
-STOCK_SUPPLIER_TOPIC = os.getenv("KAFKA_STOCK_SUPPLIER_TOPIC", "stock-supplier-events")
-GROUP_ID = os.getenv("KAFKA_PRODUCTS_GROUP_ID", "customer-products-consumer-group")
-SUPPLIER_PRODUCTS_URL = os.getenv("SUPPLIER_PRODUCTS_URL", "http://user-service:8000/products")
+PRODUCT_TOPIC = os.getenv("KAFKA_PRODUCT_TOPIC", "product-events")
+PRODUCT_STOCK_TOPIC = os.getenv("KAFKA_PRODUCT_STOCK_TOPIC", "product-stock-events")
+GROUP_ID = os.getenv("KAFKA_PRODUCTS_GROUP_ID", "customer-product-events-consumer-group")
+SUPPLIER_PRODUCTS_URL = os.getenv("SUPPLIER_PRODUCTS_URL", "http://supplier-service:8000/products")
 MAX_RETRIES = 3
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
         and existing.description == payload.get("description")
         and existing.price == payload["price"]
         and existing.stocks == payload["stocks"]
+        and existing.is_active == payload.get("is_active", True)
+        and existing.is_archived == payload.get("is_archived", False)
         and existing.created_at == created_at
     ):
         return False
@@ -63,6 +65,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
         "description": payload.get("description"),
         "price": payload["price"],
         "stocks": payload["stocks"],
+        "is_active": payload.get("is_active", True),
+        "is_archived": payload.get("is_archived", False),
         "created_at": created_at,
     }
     stmt = insert(Product).values(**values)
@@ -74,6 +78,8 @@ def upsert_product(db: Session, payload: dict) -> bool:
                 "description": stmt.excluded.description,
                 "price": stmt.excluded.price,
                 "stocks": stmt.excluded.stocks,
+                "is_active": stmt.excluded.is_active,
+                "is_archived": stmt.excluded.is_archived,
                 "created_at": stmt.excluded.created_at,
             },
         )
@@ -113,10 +119,12 @@ def sync_products_from_supplier() -> None:
     logger.info("Customer sync: requesting products from supplier")
     try:
         with urllib.request.urlopen(SUPPLIER_PRODUCTS_URL, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            response_payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         logger.warning("Customer sync warning: failed to fetch products from supplier: %s", exc)
         return
+
+    payload = response_payload["items"] if isinstance(response_payload, dict) and "items" in response_payload else response_payload
 
     with SessionLocal() as db:
         actual_ids: set[int] = set()
@@ -163,8 +171,11 @@ def process_message(raw_message: bytes, topic: str) -> None:
                 logger.info("Customer consumer: event skipped topic=%s reason=unsupported_event_type", topic)
             return
 
-        total_quantity = data.get("total_quantity", data.get("stocks"))
-        changed = upsert_product_stocks(db, data["product_id"], total_quantity)
+        total_available_stocks = data.get("total_quantity", data.get("stocks"))
+        changed = upsert_product_stocks(db, data["product_id"], total_available_stocks)
+        if not changed:
+            sync_products_from_supplier()
+            changed = upsert_product_stocks(db, data["product_id"], total_available_stocks)
         logger.info(
             "Customer consumer: event %s topic=%s product_id=%s",
             "processed" if changed else "skipped",
@@ -177,7 +188,7 @@ def process_message(raw_message: bytes, topic: str) -> None:
 def consume_forever() -> None:
     while True:
         try:
-            consumer.subscribe([PRODUCT_TOPIC, STOCK_SUPPLIER_TOPIC])
+            consumer.subscribe([PRODUCT_TOPIC, PRODUCT_STOCK_TOPIC])
             while True:
                 message = consumer.poll(1.0)
                 if message is None:
