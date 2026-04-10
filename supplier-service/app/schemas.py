@@ -8,11 +8,11 @@ NON_DIGIT_PATTERN = re.compile(r"\D")
 
 
 class SupplierBase(BaseModel):
-    full_name: str = Field(min_length=3, max_length=255, examples=["Иван Петров"])
-    phone_number: str = Field(max_length=30, examples=["+79991234567"])
-    email: EmailStr = Field(examples=["ivan@example.com"])
-    birth_date: date = Field(examples=["1995-05-20"])
-    city: str = Field(min_length=2, max_length=120, examples=["Moscow"])
+    full_name: str = Field(min_length=3, max_length=255, examples=["Ivan Petrov"], description="Supplier full name")
+    phone_number: str = Field(max_length=30, examples=["+79991234567"], description="Supplier phone number")
+    email: EmailStr = Field(examples=["ivan@example.com"], description="Supplier email address")
+    birth_date: date = Field(examples=["1995-05-20"], description="Supplier birth date")
+    city: str = Field(min_length=2, max_length=120, examples=["Moscow"], description="Supplier city")
 
     @field_validator("phone_number")
     @classmethod
@@ -23,10 +23,10 @@ class SupplierBase(BaseModel):
         elif normalized.startswith("8") and len(normalized) == 11:
             candidate = f"+7{normalized[1:]}"
         else:
-            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+            raise ValueError("phone number must be in format +7XXXXXXXXXX or 8XXXXXXXXXX")
 
         if not PHONE_PATTERN.fullmatch(candidate):
-            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+            raise ValueError("phone number must be in format +7XXXXXXXXXX or 8XXXXXXXXXX")
         return candidate
 
 
@@ -52,10 +52,10 @@ class SupplierUpdate(BaseModel):
         elif normalized.startswith("8") and len(normalized) == 11:
             candidate = f"+7{normalized[1:]}"
         else:
-            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+            raise ValueError("phone number must be in format +7XXXXXXXXXX or 8XXXXXXXXXX")
 
         if not PHONE_PATTERN.fullmatch(candidate):
-            raise ValueError("Номер телефона должен быть в формате +7XXXXXXXXXX или 8XXXXXXXXXX")
+            raise ValueError("phone number must be in format +7XXXXXXXXXX or 8XXXXXXXXXX")
         return candidate
 
 
@@ -68,12 +68,12 @@ class SupplierRead(SupplierBase):
 
 
 class ProductBase(BaseModel):
-    supplier_id: int = Field(examples=[1], gt=0)
-    name: str = Field(min_length=1, max_length=255, examples=["Ноутбук"])
-    description: str | None = Field(default=None, max_length=1000, examples=["Игровой ноутбук"])
-    price: float = Field(gt=0, examples=[999.99])
-    is_active: bool = Field(default=True, examples=[True])
-    is_archived: bool = Field(default=False, examples=[False])
+    supplier_id: int = Field(examples=[1], gt=0, description="Product owner supplier ID")
+    name: str = Field(min_length=1, max_length=255, examples=["Gaming laptop"], description="Non-empty product name")
+    description: str | None = Field(default=None, max_length=1000, examples=["15-inch gaming laptop"], description="Product description")
+    price: float = Field(gt=0, examples=[999.99], description="Product price, must be greater than zero")
+    is_active: bool = Field(default=True, examples=[True], description="Whether the product can be purchased")
+    is_archived: bool = Field(default=False, examples=[False], description="Whether the product is archived")
 
     @field_validator("name")
     @classmethod
@@ -109,15 +109,25 @@ class ProductUpdate(BaseModel):
 
 class ProductRead(ProductBase):
     id: int
-    stocks: int = Field(ge=0, examples=[10])
-    total_price: float = Field(ge=0, examples=[9999.9])
+    stocks: int = Field(ge=0, examples=[10], description="Aggregated stock across all warehouses")
+    total_price: float = Field(ge=0, examples=[9999.9], description="price * stocks")
     created_at: datetime
 
 
+class SupplierListRead(BaseModel):
+    items: list[SupplierRead]
+    count: int
+
+
+class ProductListRead(BaseModel):
+    items: list[ProductRead]
+    count: int
+
+
 class WarehouseBase(BaseModel):
-    name: str = Field(min_length=2, max_length=255, examples=["Склад Север"])
-    weekday_hours: str = Field(min_length=2, max_length=255, examples=["Пн-Пт 09:00-18:00"])
-    address: str = Field(min_length=5, max_length=500, examples=["Москва, ул. Ленина, 10"])
+    name: str = Field(min_length=2, max_length=255, examples=["North warehouse"], description="Warehouse display name")
+    weekday_hours: str = Field(min_length=2, max_length=255, examples=["Mon-Fri 09:00-18:00"], description="Warehouse weekday schedule")
+    address: str = Field(min_length=5, max_length=500, examples=["Moscow, Lenina street, 10"], description="Warehouse address")
 
 
 class WarehouseCreate(WarehouseBase):
@@ -135,6 +145,11 @@ class WarehouseRead(WarehouseBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseListRead(BaseModel):
+    items: list[WarehouseRead]
+    count: int
 
 
 class WarehouseStockItem(BaseModel):

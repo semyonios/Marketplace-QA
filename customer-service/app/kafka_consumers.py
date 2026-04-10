@@ -119,10 +119,12 @@ def sync_products_from_supplier() -> None:
     logger.info("Customer sync: requesting products from supplier")
     try:
         with urllib.request.urlopen(SUPPLIER_PRODUCTS_URL, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            response_payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         logger.warning("Customer sync warning: failed to fetch products from supplier: %s", exc)
         return
+
+    payload = response_payload["items"] if isinstance(response_payload, dict) and "items" in response_payload else response_payload
 
     with SessionLocal() as db:
         actual_ids: set[int] = set()

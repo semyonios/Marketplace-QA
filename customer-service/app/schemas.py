@@ -4,8 +4,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
-    full_name: str = Field(min_length=3, max_length=255, examples=["Покупатель Иванов"])
-    email: EmailStr = Field(examples=["buyer@example.com"])
+    full_name: str = Field(min_length=3, max_length=255, examples=["Buyer Ivanov"], description="Customer full name")
+    email: EmailStr = Field(examples=["buyer@example.com"], description="Customer email address")
 
 
 class UserRead(UserCreate):
@@ -36,6 +36,16 @@ class ProductSummary(BaseModel):
     is_archived: bool
 
 
+class UserListRead(BaseModel):
+    items: list[UserRead]
+    count: int
+
+
+class ProductListRead(BaseModel):
+    items: list[ProductRead]
+    count: int
+
+
 class FavoriteCreate(BaseModel):
     user_id: int = Field(gt=0)
     product_id: int = Field(gt=0)
@@ -50,6 +60,7 @@ class FavoriteRead(BaseModel):
 
 class FavoriteListRead(BaseModel):
     items: list[FavoriteRead]
+    count: int
 
 
 class CartCreate(BaseModel):
@@ -76,6 +87,8 @@ class CartItemRead(BaseModel):
 
 class CartRead(BaseModel):
     items: list[CartItemRead]
+    count: int
+    total_items_count: int
     total_price: float
 
 
@@ -104,9 +117,11 @@ class OrderRead(BaseModel):
     order_number: str
     status: str
     items: list[OrderItemRead]
+    total_items_count: int
     total_price: float
     created_at: datetime
 
 
 class OrderListRead(BaseModel):
     items: list[OrderRead]
+    count: int

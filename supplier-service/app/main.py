@@ -12,13 +12,16 @@ from .kafka_producer import publish_product_event, publish_product_stock_event, 
 from .models import Product, Supplier, Warehouse, WarehouseProduct
 from .schemas import (
     ProductCreate,
+    ProductListRead,
     ProductRead,
     ProductUpdate,
     RestockRequest,
     SupplierCreate,
+    SupplierListRead,
     SupplierRead,
     SupplierUpdate,
     WarehouseCreate,
+    WarehouseListRead,
     WarehouseRead,
     WarehouseUpdate,
 )
@@ -43,14 +46,14 @@ def ensure_supplier_schema() -> None:
 
 app = FastAPI(
     title="Supplier Service",
-    description="CRUD для поставщиков, товаров и складов с отправкой событий в Kafka.",
+    description="Supplier-side management for suppliers, products, warehouses, and stock publishing to Kafka.",
     version="1.0.0",
     openapi_tags=[
-        {"name": "Служебное API", "description": "Технические и health-ручки сервиса поставщика"},
-        {"name": "API для управления поставщиками", "description": "Создание, получение, изменение и удаление поставщиков"},
-        {"name": "API для управления товарами", "description": "Создание и редактирование карточек товаров"},
-        {"name": "API для управления остатками", "description": "Ручки для работы с остатками товаров на складах"},
-        {"name": "API для управления складами", "description": "Создание, изменение, удаление и просмотр складов"},
+        {"name": "Service API", "description": "Technical and health endpoints."},
+        {"name": "Suppliers API", "description": "Create, read, update, and delete suppliers."},
+        {"name": "Products API", "description": "Create, read, update, and delete products."},
+        {"name": "Stock API", "description": "Update product stock in warehouses."},
+        {"name": "Warehouses API", "description": "Create, read, update, and delete warehouses."},
     ],
 )
 
@@ -103,14 +106,14 @@ def recalculate_product_stocks(db: Session, product_id: int) -> Product | None:
 
 def ensure_product_state(is_active: bool, is_archived: bool) -> None:
     if is_archived and is_active:
-        raise HTTPException(status_code=409, detail="product is archived")
+        raise HTTPException(status_code=409, detail="product_archived")
 
 
 @app.get(
     "/health",
-    summary="Проверка supplier-service",
-    description="Возвращает простой статус доступности сервиса поставщика",
-    tags=["Служебное API"],
+    summary="Healthcheck",
+    description="Returns supplier-service availability status.",
+    tags=["Service API"],
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -120,9 +123,9 @@ def healthcheck() -> dict[str, str]:
     "/suppliers",
     response_model=SupplierRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Создать поставщика",
-    description="Создаёт нового поставщика в базе supplier-service",
-    tags=["API для управления поставщиками"],
+    summary="Create supplier",
+    description="Creates a supplier profile in supplier-service.",
+    tags=["Suppliers API"],
 )
 def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) -> Supplier:
     supplier = Supplier(**supplier_in.model_dump())
@@ -131,7 +134,7 @@ def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Поставщик с таким email или телефоном уже существует") from exc
+        raise HTTPException(status_code=409, detail="supplier_conflict") from exc
 
     db.refresh(supplier)
     publish_supplier_event("SUPPLIER_CREATED", SupplierRead.model_validate(supplier).model_dump(mode="json"))
@@ -140,40 +143,41 @@ def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) 
 
 @app.get(
     "/suppliers",
-    response_model=list[SupplierRead],
-    summary="Список поставщиков",
-    description="Возвращает список всех поставщиков",
-    tags=["API для управления поставщиками"],
+    response_model=SupplierListRead,
+    summary="List suppliers",
+    description="Returns all suppliers in a QA-friendly list wrapper.",
+    tags=["Suppliers API"],
 )
-def list_suppliers(db: Session = Depends(get_db)) -> list[Supplier]:
-    return list(db.scalars(select(Supplier).order_by(Supplier.id)))
+def list_suppliers(db: Session = Depends(get_db)) -> SupplierListRead:
+    items = list(db.scalars(select(Supplier).order_by(Supplier.id)))
+    return SupplierListRead(items=items, count=len(items))
 
 
 @app.get(
     "/suppliers/{supplier_id}",
     response_model=SupplierRead,
-    summary="Получить поставщика",
-    description="Возвращает поставщика по его идентификатору",
-    tags=["API для управления поставщиками"],
+    summary="Get supplier",
+    description="Returns a supplier by ID.",
+    tags=["Suppliers API"],
 )
 def get_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Supplier:
     supplier = db.get(Supplier, supplier_id)
     if not supplier:
-        raise HTTPException(status_code=404, detail="Поставщик не найден")
+        raise HTTPException(status_code=404, detail="supplier_not_found")
     return supplier
 
 
 @app.put(
     "/suppliers/{supplier_id}",
     response_model=SupplierRead,
-    summary="Обновить поставщика",
-    description="Обновляет данные поставщика по идентификатору",
-    tags=["API для управления поставщиками"],
+    summary="Update supplier",
+    description="Updates supplier profile data by ID.",
+    tags=["Suppliers API"],
 )
 def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session = Depends(get_db)) -> Supplier:
     supplier = db.get(Supplier, supplier_id)
     if not supplier:
-        raise HTTPException(status_code=404, detail="Поставщик не найден")
+        raise HTTPException(status_code=404, detail="supplier_not_found")
 
     for field, value in supplier_in.model_dump(exclude_unset=True).items():
         setattr(supplier, field, value)
@@ -182,7 +186,7 @@ def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session =
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Поставщик с таким email или телефоном уже существует") from exc
+        raise HTTPException(status_code=409, detail="supplier_conflict") from exc
 
     db.refresh(supplier)
     publish_supplier_event("SUPPLIER_UPDATED", SupplierRead.model_validate(supplier).model_dump(mode="json"))
@@ -193,14 +197,14 @@ def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session =
     "/suppliers/{supplier_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Удалить поставщика",
-    description="Удаляет поставщика по идентификатору",
-    tags=["API для управления поставщиками"],
+    summary="Delete supplier",
+    description="Deletes a supplier by ID.",
+    tags=["Suppliers API"],
 )
 def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response:
     supplier = db.get(Supplier, supplier_id)
     if not supplier:
-        raise HTTPException(status_code=404, detail="Поставщик не найден")
+        raise HTTPException(status_code=404, detail="supplier_not_found")
 
     payload = SupplierRead.model_validate(supplier).model_dump(mode="json")
     db.delete(supplier)
@@ -213,9 +217,9 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response
     "/warehouses",
     response_model=WarehouseRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Создать склад",
-    description="Создаёт новый склад с названием, графиком работы по будням и адресом",
-    tags=["API для управления складами"],
+    summary="Create warehouse",
+    description="Creates a warehouse with name, weekday schedule, and address.",
+    tags=["Warehouses API"],
 )
 def create_warehouse(warehouse_in: WarehouseCreate, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = Warehouse(**warehouse_in.model_dump())
@@ -227,40 +231,41 @@ def create_warehouse(warehouse_in: WarehouseCreate, db: Session = Depends(get_db
 
 @app.get(
     "/warehouses",
-    response_model=list[WarehouseRead],
-    summary="Список складов",
-    description="Возвращает список всех складов поставщика",
-    tags=["API для управления складами"],
+    response_model=WarehouseListRead,
+    summary="List warehouses",
+    description="Returns all warehouses in a QA-friendly list wrapper.",
+    tags=["Warehouses API"],
 )
-def list_warehouses(db: Session = Depends(get_db)) -> list[Warehouse]:
-    return list(db.scalars(select(Warehouse).order_by(Warehouse.id)))
+def list_warehouses(db: Session = Depends(get_db)) -> WarehouseListRead:
+    items = list(db.scalars(select(Warehouse).order_by(Warehouse.id)))
+    return WarehouseListRead(items=items, count=len(items))
 
 
 @app.get(
     "/warehouses/{warehouse_id}",
     response_model=WarehouseRead,
-    summary="Получить склад",
-    description="Возвращает склад по его идентификатору",
-    tags=["API для управления складами"],
+    summary="Get warehouse",
+    description="Returns a warehouse by ID.",
+    tags=["Warehouses API"],
 )
 def get_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = db.get(Warehouse, warehouse_id)
     if not warehouse:
-        raise HTTPException(status_code=404, detail="Склад не найден")
+        raise HTTPException(status_code=404, detail="warehouse_not_found")
     return warehouse
 
 
 @app.put(
     "/warehouses/{warehouse_id}",
     response_model=WarehouseRead,
-    summary="Обновить склад",
-    description="Обновляет название, график работы по будням и адрес склада",
-    tags=["API для управления складами"],
+    summary="Update warehouse",
+    description="Updates warehouse name, weekday schedule, and address.",
+    tags=["Warehouses API"],
 )
 def update_warehouse(warehouse_id: int, warehouse_in: WarehouseUpdate, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = db.get(Warehouse, warehouse_id)
     if not warehouse:
-        raise HTTPException(status_code=404, detail="Склад не найден")
+        raise HTTPException(status_code=404, detail="warehouse_not_found")
 
     for field, value in warehouse_in.model_dump(exclude_unset=True).items():
         setattr(warehouse, field, value)
@@ -274,14 +279,14 @@ def update_warehouse(warehouse_id: int, warehouse_in: WarehouseUpdate, db: Sessi
     "/warehouses/{warehouse_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Удалить склад",
-    description="Удаляет склад и обнуляет остатки товаров, которые были размещены на этом складе",
-    tags=["API для управления складами"],
+    summary="Delete warehouse",
+    description="Deletes a warehouse and recalculates affected product stock totals.",
+    tags=["Warehouses API"],
 )
 def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Response:
     warehouse = db.get(Warehouse, warehouse_id)
     if not warehouse:
-        raise HTTPException(status_code=404, detail="Склад не найден")
+        raise HTTPException(status_code=404, detail="warehouse_not_found")
 
     stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.warehouse_id == warehouse_id)))
     affected_product_ids = sorted({row.product_id for row in stock_rows})
@@ -301,14 +306,14 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
     "/products",
     response_model=ProductRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Создать товар",
-    description="Создаёт новый товар и привязывает его к поставщику. Остатки управляются отдельно через склады.",
-    tags=["API для управления товарами"],
+    summary="Create product",
+    description="Creates a product for a supplier. Stock is managed separately through warehouses.",
+    tags=["Products API"],
 )
 def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> ProductRead:
     supplier = db.get(Supplier, product_in.supplier_id)
     if not supplier:
-        raise HTTPException(status_code=404, detail="supplier not found")
+        raise HTTPException(status_code=404, detail="supplier_not_found")
 
     ensure_product_state(product_in.is_active, product_in.is_archived)
 
@@ -324,45 +329,46 @@ def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> 
 
 @app.get(
     "/products",
-    response_model=list[ProductRead],
-    summary="Список товаров",
-    description="Возвращает список всех товаров поставщика вместе с общей стоимостью остатков",
-    tags=["API для управления товарами"],
+    response_model=ProductListRead,
+    summary="List products",
+    description="Returns all supplier products in a QA-friendly list wrapper.",
+    tags=["Products API"],
 )
-def list_products(db: Session = Depends(get_db)) -> list[ProductRead]:
-    return [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
+def list_products(db: Session = Depends(get_db)) -> ProductListRead:
+    items = [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
+    return ProductListRead(items=items, count=len(items))
 
 
 @app.get(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Получить товар",
-    description="Возвращает товар по его идентификатору вместе с общей стоимостью остатков",
-    tags=["API для управления товарами"],
+    summary="Get product",
+    description="Returns a product by ID with aggregated stock information.",
+    tags=["Products API"],
 )
 def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="product not found")
+        raise HTTPException(status_code=404, detail="product_not_found")
     return serialize_product(product)
 
 
 @app.put(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Обновить товар",
-    description="Обновляет данные товара без изменения складских остатков",
-    tags=["API для управления товарами"],
+    summary="Update product",
+    description="Updates product fields without changing warehouse stock rows.",
+    tags=["Products API"],
 )
 def update_product(product_id: int, product_in: ProductUpdate, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="product not found")
+        raise HTTPException(status_code=404, detail="product_not_found")
 
     updates = product_in.model_dump(exclude_unset=True)
     supplier_id = updates.get("supplier_id")
     if supplier_id is not None and not db.get(Supplier, supplier_id):
-        raise HTTPException(status_code=404, detail="supplier not found")
+        raise HTTPException(status_code=404, detail="supplier_not_found")
 
     next_is_active = updates.get("is_active", product.is_active)
     next_is_archived = updates.get("is_archived", product.is_archived)
@@ -381,15 +387,15 @@ def update_product(product_id: int, product_in: ProductUpdate, db: Session = Dep
 
 @app.post(
     "/warehouses/{warehouse_id}/stocks",
-    response_model=list[ProductRead],
-    summary="Управление остатками",
-    description="Принимает идентификатор склада в URL и набор товаров с фактическими остатками в теле запроса, обновляет их и отправляет новые агрегированные остатки в Kafka",
-    tags=["API для управления остатками"],
+    response_model=ProductListRead,
+    summary="Update stock",
+    description="Updates factual stock values for products in a warehouse and publishes aggregated stock events.",
+    tags=["Stock API"],
 )
-def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session = Depends(get_db)) -> list[ProductRead]:
+def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session = Depends(get_db)) -> ProductListRead:
     warehouse = db.get(Warehouse, warehouse_id)
     if not warehouse:
-        raise HTTPException(status_code=404, detail="warehouse not found")
+        raise HTTPException(status_code=404, detail="warehouse_not_found")
 
     updated_products: list[ProductRead] = []
     seen_product_ids: set[int] = set()
@@ -397,7 +403,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     for item in restock_in.items:
         product = db.get(Product, item.product_id)
         if not product:
-            raise HTTPException(status_code=404, detail="product not found")
+            raise HTTPException(status_code=404, detail="product_not_found")
 
         stock_row = db.scalar(
             select(WarehouseProduct).where(
@@ -417,21 +423,21 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
             updated_products.append(serialize_product(recalculated))
             seen_product_ids.add(recalculated.id)
 
-    return updated_products
+    return ProductListRead(items=updated_products, count=len(updated_products))
 
 
 @app.delete(
     "/products/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Удалить товар",
-    description="Удаляет товар по идентификатору",
-    tags=["API для управления товарами"],
+    summary="Delete product",
+    description="Deletes a product by ID.",
+    tags=["Products API"],
 )
 def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="product not found")
+        raise HTTPException(status_code=404, detail="product_not_found")
 
     stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
     for row in stock_rows:

@@ -25,9 +25,11 @@ from .schemas import (
     OrderItemRead,
     OrderListRead,
     OrderRead,
+    ProductListRead,
     ProductRead,
     ProductSummary,
     UserCreate,
+    UserListRead,
     UserRead,
 )
 
@@ -36,15 +38,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Customer Service",
-    description="Покупатели, избранное, корзина и заказы с синхронизацией товаров через Kafka.",
+    description="Customer catalog, favorites, cart, and orders backed by Kafka product synchronization.",
     version="3.0.0",
     openapi_tags=[
-        {"name": "Служебное API", "description": "Технические и health-ручки сервиса покупателя"},
-        {"name": "API для управления покупателями", "description": "Создание и просмотр покупателей"},
-        {"name": "API для просмотра товаров", "description": "Просмотр локальной копии товаров и их остатков"},
-        {"name": "API для избранного", "description": "Работа с избранными товарами"},
-        {"name": "API для корзины", "description": "Добавление, изменение и удаление товаров в корзине"},
-        {"name": "API для заказов", "description": "Оформление заказов и просмотр истории покупок"},
+        {"name": "Service API", "description": "Technical and health endpoints."},
+        {"name": "Users API", "description": "Create and read customer profiles."},
+        {"name": "Catalog API", "description": "Read the local customer-facing product catalog."},
+        {"name": "Favorites API", "description": "Manage favorite products."},
+        {"name": "Cart API", "description": "Manage cart items and quantities."},
+        {"name": "Orders API", "description": "Create, read, and cancel orders."},
     ],
 )
 
@@ -141,7 +143,12 @@ def serialize_cart_item(db: Session, cart_item: CartItem) -> CartItemRead:
 
 def serialize_cart(db: Session, cart_items: list[CartItem]) -> CartRead:
     items = [serialize_cart_item(db, cart_item) for cart_item in cart_items]
-    return CartRead(items=items, total_price=round(sum(item.total_price for item in items), 2))
+    return CartRead(
+        items=items,
+        count=len(items),
+        total_items_count=sum(item.quantity for item in items),
+        total_price=round(sum(item.total_price for item in items), 2),
+    )
 
 
 def serialize_order_item(db: Session, order_item: OrderItem) -> OrderItemRead:
@@ -164,6 +171,7 @@ def serialize_order(db: Session, order: Order) -> OrderRead:
         order_number=order.order_number or generate_order_number(order.id),
         status=order.status,
         items=[serialize_order_item(db, order_item) for order_item in order_items],
+        total_items_count=sum(order_item.quantity for order_item in order_items),
         total_price=round(order.total_price, 2),
         created_at=order.created_at,
     )
@@ -175,9 +183,9 @@ def generate_order_number(order_id: int) -> str:
 
 @app.get(
     "/health",
-    summary="Проверка customer-service",
-    description="Возвращает простой статус доступности сервиса покупателя",
-    tags=["Служебное API"],
+    summary="Healthcheck",
+    description="Returns customer-service availability status.",
+    tags=["Service API"],
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -187,9 +195,9 @@ def healthcheck() -> dict[str, str]:
     "/users",
     response_model=UserRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Создать покупателя",
-    description="Создаёт нового покупателя в базе customer-service",
-    tags=["API для управления покупателями"],
+    summary="Create user",
+    description="Creates a customer profile in customer-service.",
+    tags=["Users API"],
 )
 def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
     user = User(**user_in.model_dump())
@@ -198,28 +206,29 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Пользователь с таким email уже существует") from exc
+        raise HTTPException(status_code=409, detail="user_conflict") from exc
     db.refresh(user)
     return user
 
 
 @app.get(
     "/users",
-    response_model=list[UserRead],
-    summary="Список покупателей",
-    description="Возвращает список всех покупателей",
-    tags=["API для управления покупателями"],
+    response_model=UserListRead,
+    summary="List users",
+    description="Returns all users in a QA-friendly list wrapper.",
+    tags=["Users API"],
 )
-def list_users(db: Session = Depends(get_db)) -> list[User]:
-    return list(db.scalars(select(User).order_by(User.id)))
+def list_users(db: Session = Depends(get_db)) -> UserListRead:
+    items = list(db.scalars(select(User).order_by(User.id)))
+    return UserListRead(items=items, count=len(items))
 
 
 @app.get(
     "/users/{user_id}",
     response_model=UserRead,
-    summary="Получить покупателя",
-    description="Возвращает покупателя по его идентификатору",
-    tags=["API для управления покупателями"],
+    summary="Get user",
+    description="Returns a user by ID.",
+    tags=["Users API"],
 )
 def get_user(user_id: int, db: Session = Depends(get_db)) -> User:
     return validate_user(db, user_id)
@@ -227,21 +236,22 @@ def get_user(user_id: int, db: Session = Depends(get_db)) -> User:
 
 @app.get(
     "/products",
-    response_model=list[ProductRead],
-    summary="Список товаров",
-    description="Возвращает локальную копию товаров с актуальными остатками и их общей стоимостью, полученную через Kafka",
-    tags=["API для просмотра товаров"],
+    response_model=ProductListRead,
+    summary="List products",
+    description="Returns the customer-facing product catalog in a QA-friendly list wrapper.",
+    tags=["Catalog API"],
 )
-def list_products(db: Session = Depends(get_db)) -> list[ProductRead]:
-    return [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
+def list_products(db: Session = Depends(get_db)) -> ProductListRead:
+    items = [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
+    return ProductListRead(items=items, count=len(items))
 
 
 @app.get(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Получить товар",
-    description="Возвращает локальную копию товара по идентификатору с актуальными остатками и общей стоимостью",
-    tags=["API для просмотра товаров"],
+    summary="Get product",
+    description="Returns a single product from the local customer catalog.",
+    tags=["Catalog API"],
 )
 def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     product = get_existing_product(db, product_id)
@@ -252,9 +262,9 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     "/favorites",
     response_model=FavoriteRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Добавить в избранное",
-    description="Добавляет товар в избранное выбранного покупателя. Повторный вызов возвращает уже существующую запись.",
-    tags=["API для избранного"],
+    summary="Add to favorites",
+    description="Adds a product to the user's favorites. Repeating the request returns the existing favorite item.",
+    tags=["Favorites API"],
 )
 def add_to_favorites(favorite_in: FavoriteCreate, db: Session = Depends(get_db)) -> FavoriteRead:
     validate_user_and_product(db, favorite_in.user_id, favorite_in.product_id)
@@ -273,29 +283,29 @@ def add_to_favorites(favorite_in: FavoriteCreate, db: Session = Depends(get_db))
 @app.get(
     "/favorites",
     response_model=FavoriteListRead,
-    summary="Список избранного",
-    description="Возвращает все товары из избранного выбранного покупателя",
-    tags=["API для избранного"],
+    summary="List favorites",
+    description="Returns all favorite products for a user in a QA-friendly list wrapper.",
+    tags=["Favorites API"],
 )
 def list_favorites(user_id: int, db: Session = Depends(get_db)) -> FavoriteListRead:
     validate_user(db, user_id)
     favorites = list(db.scalars(select(Favorite).where(Favorite.user_id == user_id).order_by(Favorite.id)))
-    return FavoriteListRead(items=[serialize_favorite(db, favorite) for favorite in favorites])
+    return FavoriteListRead(items=[serialize_favorite(db, favorite) for favorite in favorites], count=len(favorites))
 
 
 @app.delete(
     "/favorites/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Удалить из избранного",
-    description="Удаляет товар из избранного по user_id и product_id",
-    tags=["API для избранного"],
+    summary="Delete favorite",
+    description="Deletes a favorite product by user_id and product_id.",
+    tags=["Favorites API"],
 )
 def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)) -> Response:
     validate_user(db, user_id)
     favorite = db.scalar(select(Favorite).where(Favorite.user_id == user_id, Favorite.product_id == product_id))
     if not favorite:
-        raise HTTPException(status_code=404, detail="Товар не найден в избранном")
+        raise HTTPException(status_code=404, detail="favorite_not_found")
     db.delete(favorite)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -304,9 +314,9 @@ def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)
 @app.get(
     "/cart",
     response_model=CartRead,
-    summary="Получить корзину",
-    description="Возвращает корзину выбранного покупателя со списком позиций и общей стоимостью",
-    tags=["API для корзины"],
+    summary="Get cart",
+    description="Returns the user's cart with aggregated counters and total price.",
+    tags=["Cart API"],
 )
 def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     validate_user(db, user_id)
@@ -318,9 +328,9 @@ def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     "/cart",
     response_model=CartItemRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Добавить в корзину",
-    description="Добавляет товар в корзину. Если товар уже есть, увеличивает количество в существующей позиции.",
-    tags=["API для корзины"],
+    summary="Add to cart",
+    description="Adds a product to the cart. If the product already exists there, quantity is increased.",
+    tags=["Cart API"],
 )
 def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_in.user_id, cart_in.product_id)
@@ -346,16 +356,16 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
 @app.patch(
     "/cart/{product_id}",
     response_model=CartItemRead,
-    summary="Изменить количество в корзине",
-    description="Изменяет количество конкретного товара в корзине выбранного покупателя",
-    tags=["API для корзины"],
+    summary="Update cart item quantity",
+    description="Updates quantity for a product already present in the user's cart.",
+    tags=["Cart API"],
 )
 def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_update.user_id, product_id)
     ensure_product_can_be_purchased(product)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == cart_update.user_id, CartItem.product_id == product_id))
     if not cart_item:
-        raise HTTPException(status_code=404, detail="cart item not found")
+        raise HTTPException(status_code=404, detail="cart_item_not_found")
 
     ensure_requested_quantity_available(cart_update.quantity, product.stocks, product_id)
     cart_item.quantity = cart_update.quantity
@@ -368,15 +378,15 @@ def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Sessi
     "/cart/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Удалить из корзины",
-    description="Удаляет товар из корзины по user_id и product_id",
-    tags=["API для корзины"],
+    summary="Delete cart item",
+    description="Deletes a product from the user's cart by user_id and product_id.",
+    tags=["Cart API"],
 )
 def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db)) -> Response:
     validate_user(db, user_id)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == user_id, CartItem.product_id == product_id))
     if not cart_item:
-        raise HTTPException(status_code=404, detail="cart item not found")
+        raise HTTPException(status_code=404, detail="cart_item_not_found")
     db.delete(cart_item)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -386,9 +396,9 @@ def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db
     "/orders",
     response_model=OrderRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Оформить заказ",
-    description="Создаёт заказ из переданных items или из текущей корзины покупателя. После оформления корзина очищается.",
-    tags=["API для заказов"],
+    summary="Create order",
+    description="Creates an order from explicit items or from the current cart. Cart items are removed after successful creation.",
+    tags=["Orders API"],
 )
 def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, order_in.user_id)
@@ -426,6 +436,7 @@ def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderR
 
     db.commit()
     db.refresh(order)
+    logger.info("order created order_id=%s user_id=%s total_items_count=%s total_price=%s", order.id, order.user_id, sum(quantity for _, quantity in order_events), order.total_price)
 
     for product_id, quantity in order_events:
         publish_order_created(product_id, quantity)
@@ -436,30 +447,31 @@ def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderR
 @app.post(
     "/orders/{order_id}/cancel",
     response_model=OrderRead,
-    summary="Отменить заказ",
-    description="Меняет статус заказа на cancelled, если заказ ещё не был отменён ранее.",
-    tags=["API для заказов"],
+    summary="Cancel order",
+    description="Changes order status to cancelled if it has not been cancelled yet.",
+    tags=["Orders API"],
 )
 def cancel_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, user_id)
     order = db.scalar(select(Order).where(Order.id == order_id, Order.user_id == user_id, Order.order_number.is_not(None)))
     if not order:
-        raise HTTPException(status_code=404, detail="order not found")
+        raise HTTPException(status_code=404, detail="order_not_found")
     if order.status == "cancelled":
-        raise HTTPException(status_code=409, detail="order is already cancelled")
+        raise HTTPException(status_code=409, detail="order_already_cancelled")
 
     order.status = "cancelled"
     db.commit()
     db.refresh(order)
+    logger.info("order cancelled order_id=%s user_id=%s", order.id, order.user_id)
     return serialize_order(db, order)
 
 
 @app.get(
     "/orders",
     response_model=OrderListRead,
-    summary="Список заказов",
-    description="Возвращает все оформленные заказы выбранного покупателя",
-    tags=["API для заказов"],
+    summary="List orders",
+    description="Returns all user orders in a QA-friendly list wrapper.",
+    tags=["Orders API"],
 )
 def list_orders(user_id: int, db: Session = Depends(get_db)) -> OrderListRead:
     validate_user(db, user_id)
@@ -470,21 +482,21 @@ def list_orders(user_id: int, db: Session = Depends(get_db)) -> OrderListRead:
             .order_by(Order.id.desc())
         )
     )
-    return OrderListRead(items=[serialize_order(db, order) for order in orders])
+    return OrderListRead(items=[serialize_order(db, order) for order in orders], count=len(orders))
 
 
 @app.get(
     "/orders/{order_id}",
     response_model=OrderRead,
-    summary="Получить заказ",
-    description="Возвращает заказ выбранного покупателя по идентификатору вместе с позициями",
-    tags=["API для заказов"],
+    summary="Get order",
+    description="Returns a single order with order items by order_id and user_id.",
+    tags=["Orders API"],
 )
 def get_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, user_id)
     order = db.scalar(select(Order).where(Order.id == order_id, Order.user_id == user_id, Order.order_number.is_not(None)))
     if not order:
-        raise HTTPException(status_code=404, detail="order not found")
+        raise HTTPException(status_code=404, detail="order_not_found")
     return serialize_order(db, order)
 
 
@@ -494,7 +506,7 @@ def build_order_items_from_request(db: Session, order_in: OrderCreate) -> list[O
 
     cart_items = list(db.scalars(select(CartItem).where(CartItem.user_id == order_in.user_id).order_by(CartItem.id)))
     if not cart_items:
-        raise HTTPException(status_code=400, detail="Корзина пуста и товары для заказа не переданы")
+        raise HTTPException(status_code=400, detail="cart_is_empty")
 
     return [OrderCreateItem(product_id=cart_item.product_id, quantity=cart_item.quantity) for cart_item in cart_items]
 
@@ -515,27 +527,28 @@ def ensure_order_items_available(db: Session, items: list[OrderCreateItem]) -> N
 
 def ensure_requested_quantity_available(requested_quantity: int, available_stocks: int, product_id: int) -> None:
     if requested_quantity > available_stocks:
-        raise HTTPException(status_code=409, detail="insufficient stock")
+        logger.warning("insufficient stock for product_id=%s requested=%s available=%s", product_id, requested_quantity, available_stocks)
+        raise HTTPException(status_code=409, detail="insufficient_stock")
 
 
 def ensure_product_can_be_purchased(product: Product) -> None:
     if product.is_archived:
-        raise HTTPException(status_code=409, detail="product is archived")
+        raise HTTPException(status_code=409, detail="product_archived")
     if not product.is_active:
-        raise HTTPException(status_code=409, detail="product is inactive")
+        raise HTTPException(status_code=409, detail="product_inactive")
 
 
 def validate_user(db: Session, user_id: int) -> User:
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail="user_not_found")
     return user
 
 
 def get_existing_product(db: Session, product_id: int) -> Product:
     product = db.get(Product, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="product not found")
+        raise HTTPException(status_code=404, detail="product_not_found")
     return product
 
 

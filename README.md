@@ -1,16 +1,22 @@
 # HTTP + Kafka Demo
 
-Мини-приложение с двумя простыми сервисами:
+Simple marketplace demo for local QA practice.
 
-- `supplier-service` - поставщики, товары, склады и остатки
-- `customer-service` - покупатели, избранное, корзина и покупка
-- `audit-consumer` - аудит событий поставщиков
-- `kafka-broker` - обмен событиями между сервисами
-- `supplier-postgres` - база поставщика `supplier_db`
-- `customer-postgres` - база покупателя `customer_db`
-- `kafka-ui` - просмотр топиков и сообщений
+- `supplier-service` manages suppliers, products, warehouses, and stock
+- `customer-service` manages catalog reads, favorites, cart, and orders
+- `audit-consumer` stores supplier events
+- `kafka-broker` transfers product and order events between services
+- `supplier-postgres` stores supplier data
+- `customer-postgres` stores customer data
+- `kafka-ui` lets you inspect topics and messages
 
-## Контейнеры
+## Architecture
+
+- `supplier-service`: source of truth for products and stock
+- `customer-service`: local read model for the customer side plus favorites, cart, and orders
+- `Kafka`: moves product and order events so the customer side can stay in sync without calling supplier-service for every action
+
+## Containers
 
 - `supplier-service`
 - `customer-service`
@@ -20,21 +26,21 @@
 - `kafka-ui`
 - `audit-consumer`
 
-## Базы данных
+## Databases
 
 - `supplier_db` - основная база поставщика
 - `customer_db` - основная база покупателя
 
-## Подключения
+## Connections
 
 - supplier-service -> `postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db`
 - customer-service -> `postgresql+psycopg://app:app@customer-postgres:5432/customer_db`
 - audit-consumer -> `postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db`
 - Kafka bootstrap servers -> `kafka-broker:9092`
 
-## Что умеет supplier-service
+## Supplier Service API
 
-### Поставщики
+### Suppliers
 
 - `POST /suppliers`
 - `GET /suppliers`
@@ -42,7 +48,7 @@
 - `PUT /suppliers/{id}`
 - `DELETE /suppliers/{id}`
 
-### Товары
+### Products
 
 - `POST /products`
 - `GET /products`
@@ -51,77 +57,117 @@
 - `POST /warehouses/{warehouse_id}/stocks`
 - `DELETE /products/{id}`
 
-Поля товара:
+Product fields:
 
-- `name` - непустое название
-- `price` - цена больше `0`
-- `stocks` - агрегированный остаток, не может быть отрицательным
-- `is_active` - доступен ли товар для покупки
-- `is_archived` - архивный товар, недоступный для покупки
+- `name` - non-empty product name
+- `price` - must be greater than `0`
+- `stocks` - aggregated stock, must be non-negative
+- `is_active` - whether the product can be purchased
+- `is_archived` - archived product flag
 
-## Что умеет customer-service
+List endpoints return:
 
-### Пользователи
+```json
+{
+  "items": [],
+  "count": 0
+}
+```
+
+## Customer Service API
+
+### Users
 
 - `POST /users`
 - `GET /users`
 - `GET /users/{id}`
 
-### Избранное
+### Favorites
 
 - `POST /favorites`
 - `GET /favorites?user_id=1`
 - `DELETE /favorites/{product_id}?user_id=1`
 
-### Корзина
+### Cart
 
 - `GET /cart?user_id=1`
 - `POST /cart`
 - `PATCH /cart/{product_id}`
 - `DELETE /cart/{product_id}?user_id=1`
 
-### Заказы
+### Orders
 
 - `POST /orders`
 - `GET /orders?user_id=1`
 - `GET /orders/{order_id}?user_id=1`
 - `POST /orders/{order_id}/cancel?user_id=1`
 
-## Kafka topics
+## Kafka Topics
 
 - `supplier-events`
 - `product-events`
 - `order-events`
 - `product-stock-events`
 
-## Логика остатков
+## Business Rules
 
-- источник истины по остаткам: `supplier-service`
-- остатки в проекте называются `stocks`
-- у товаров возвращается `total_price = price * stocks`
-- у корзины и заказов возвращается стоимость каждой позиции и общая сумма `total_price`
-- `POST /products` и `PUT /products/{id}` не управляют остатками
-- `POST /warehouses/{warehouse_id}/stocks` использует `warehouse_id` только в URL, а в теле принимает только массив `items`
-- товар нельзя создать с пустым названием
-- товар нельзя создать или обновить с `price <= 0`
-- архивный товар не должен быть одновременно `is_active=true`
-- `stocks` не может быть отрицательным
-- `POST /favorites` не влияет на корзину и заказы
-- `POST /cart` не даст добавить неактивный или архивный товар
-- `POST /cart` не даст добавить товаров больше, чем доступно в текущих `stocks`, и будет обновлять одну запись корзины для каждого товара
-- `POST /orders` можно вызвать сразу с товарами в `items` без предварительного добавления в корзину
-- `POST /orders` не даст оформить заказ для неактивного или архивного товара
-- `POST /orders` не даст оформить заказ с количеством больше доступного stock
-- оформление заказа создаёт `orders` и `order_items`, очищает корзину пользователя и отправляет `ORDER_CREATED` в `order-events`
-- заказ создаётся со статусом `created`
-- `POST /orders/{order_id}/cancel` меняет статус на `cancelled`
-- отмена заказа в этой простой версии не восстанавливает stock обратно в supplier-service
-- `supplier-service` уменьшает остаток и публикует новое значение в `product-stock-events`
-- `customer-service` обновляет локальную копию товаров по `product-stock-events`
+- stock source of truth is `supplier-service`
+- stock field name is `stocks`
+- products expose `total_price = price * stocks`
+- cart and orders expose item totals plus full totals
+- `POST /products` and `PUT /products/{id}` do not edit stock directly
+- `POST /warehouses/{warehouse_id}/stocks` updates stock values through warehouse rows
+- product name must not be empty
+- product price must be greater than zero
+- archived product cannot be active at the same time
+- stock cannot be negative
+- favorites do not affect cart or orders
+- inactive or archived products cannot be added to cart
+- cart quantity cannot exceed current stock
+- orders can be created from explicit `items` or from the cart
+- inactive or archived products cannot be ordered
+- orders with quantity above available stock fail with `insufficient_stock`
+- order creation creates `orders` and `order_items`, clears the cart, and publishes `ORDER_CREATED`
+- new orders start with status `created`
+- `POST /orders/{order_id}/cancel` changes status to `cancelled`
+- in this simple version, order cancellation does not restore stock in supplier-service
 
-## Примеры запросов
+## Error Format
 
-### Добавить в избранное
+All services return errors in the same JSON shape:
+
+```json
+{
+  "error": {
+    "code": "product_not_found",
+    "message": "Product not found"
+  }
+}
+```
+
+Examples:
+
+```json
+{
+  "error": {
+    "code": "invalid_quantity",
+    "message": "quantity: Quantity must be greater than zero"
+  }
+}
+```
+
+```json
+{
+  "error": {
+    "code": "insufficient_stock",
+    "message": "Insufficient stock"
+  }
+}
+```
+
+## Request Examples
+
+### Add to favorites
 
 ```bash
 curl -X POST http://localhost:8001/favorites \
@@ -136,7 +182,7 @@ curl -X POST http://localhost:8001/favorites \
 curl "http://localhost:8001/favorites?user_id=1"
 ```
 
-### Добавить в корзину
+### Add to cart
 
 ```bash
 curl -X POST http://localhost:8001/cart \
@@ -161,9 +207,9 @@ curl -X PATCH http://localhost:8001/cart/1 \
 curl "http://localhost:8001/cart?user_id=1"
 ```
 
-### Оформить заказ
+### Create order
 
-Из корзины:
+From cart:
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -173,7 +219,7 @@ curl -X POST http://localhost:8001/orders \
   }'
 ```
 
-Напрямую по переданным товарам:
+From explicit items:
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -191,15 +237,25 @@ curl -X POST http://localhost:8001/orders \
 curl "http://localhost:8001/orders?user_id=1"
 ```
 
-Отменить заказ:
+Cancel order:
 
 ```bash
 curl -X POST "http://localhost:8001/orders/1/cancel?user_id=1"
 ```
 
-## Негативные сценарии
+## How To Test Manually
 
-Пустое имя товара:
+1. Create a supplier with `POST /suppliers`
+2. Create a product with `POST /products`
+3. Add stock through `POST /warehouses/{warehouse_id}/stocks`
+4. Create a user with `POST /users`
+5. Add the product to cart with `POST /cart`
+6. Create an order with `POST /orders`
+7. Cancel the order with `POST /orders/{order_id}/cancel?user_id=...`
+
+## Negative Scenarios
+
+Empty product name:
 
 ```bash
 curl -X POST http://localhost:8000/products \
@@ -214,7 +270,7 @@ curl -X POST http://localhost:8000/products \
   }'
 ```
 
-Цена товара `<= 0`:
+Product price `<= 0`:
 
 ```bash
 curl -X POST http://localhost:8000/products \
@@ -229,7 +285,7 @@ curl -X POST http://localhost:8000/products \
   }'
 ```
 
-Добавление в корзину архивного или неактивного товара:
+Add inactive or archived product to cart:
 
 ```bash
 curl -X POST http://localhost:8001/cart \
@@ -241,7 +297,7 @@ curl -X POST http://localhost:8001/cart \
   }'
 ```
 
-Обновление quantity в корзине на `0`:
+Update cart quantity to `0`:
 
 ```bash
 curl -X PATCH http://localhost:8001/cart/1 \
@@ -252,7 +308,7 @@ curl -X PATCH http://localhost:8001/cart/1 \
   }'
 ```
 
-Оформление заказа с пустой корзиной:
+Create order with empty cart:
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -262,38 +318,17 @@ curl -X POST http://localhost:8001/orders \
   }'
 ```
 
-## Пользовательские сценарии
+## What To Verify In QA
 
-### Добавить в избранное
-
-1. Создать покупателя через `POST /users`
-2. Выбрать товар из `GET /products`
-3. Вызвать `POST /favorites`
-4. Проверить результат через `GET /favorites?user_id=...`
-
-### Добавить в корзину
-
-1. Выбрать товар из `GET /products`
-2. Вызвать `POST /cart` с количеством
-3. При необходимости обновить количество через `PATCH /cart/{product_id}`
-4. Проверить итоговую корзину через `GET /cart?user_id=...`
-
-### Оформить заказ
-
-1. Наполнить корзину или передать `items` сразу в `POST /orders`
-2. Убедиться, что заказ создался с `order_items`
-3. Проверить историю через `GET /orders?user_id=...`
-4. Проверить, что корзина пользователя очищена после оформления
-
-## Что важно тестировать вручную
-
-- создание и обновление товара с валидными и невалидными `name`, `price`, `is_active`, `is_archived`
-- поведение корзины для активного, неактивного и архивного товара
-- оформление заказа из корзины и напрямую через `items`
-- ошибку `insufficient stock` при заказе количества больше остатка
-- статус заказа `created` и переход в `cancelled`
-- то, что избранное не влияет на корзину и заказы
-- то, что supplier/customer синхронно видят обновлённые остатки после заказа
+- product creation and update with valid and invalid `name`, `price`, `is_active`, `is_archived`
+- list responses include `items` and `count`
+- cart response includes `total_items_count`
+- order response includes `total_items_count`
+- inactive and archived products cannot be added to cart
+- inactive and archived products cannot be ordered
+- `insufficient_stock` is returned as `409`
+- order status changes from `created` to `cancelled`
+- supplier and customer services stay in sync on stock changes through Kafka
 
 ## Запуск
 
