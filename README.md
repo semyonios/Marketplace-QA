@@ -1,46 +1,50 @@
 # HTTP + Kafka Demo
 
-Simple marketplace demo for local QA practice.
+Небольшой marketplace-проект для локального запуска и manual QA practice.
 
-- `supplier-service` manages suppliers, products, warehouses, and stock
-- `customer-service` manages catalog reads, favorites, cart, and orders
-- `audit-consumer` stores supplier events
-- `kafka-broker` transfers product and order events between services
-- `supplier-postgres` stores supplier data
-- `customer-postgres` stores customer data
-- `kafka-ui` lets you inspect topics and messages
+Проект специально сделан простым: без auth, без внешних интеграций оплаты, без сложной оркестрации. При этом в нём уже есть два домена, event-driven взаимодействие через Kafka, отдельные сценарии для `favorites`, `cart`, `orders`, продуктовые флаги `is_active` и `is_archived`, а также единый формат ошибок.
 
-## Architecture
+## Архитектура
 
-- `supplier-service`: source of truth for products and stock
-- `customer-service`: local read model for the customer side plus favorites, cart, and orders
-- `Kafka`: moves product and order events so the customer side can stay in sync without calling supplier-service for every action
+- `supplier-service` — источник истины для поставщиков, товаров, складов и остатков
+- `customer-service` — customer-side API с локальной копией каталога, а также `favorites`, `cart` и `orders`
+- `audit-consumer` — потребитель событий поставщиков
+- `Kafka` — транспорт событий между сервисами
 
-## Containers
+Важно для тестирования:
+
+- `customer-service` получает изменения по товарам и остаткам не мгновенно, а через Kafka
+- между сервисами есть eventual consistency
+- при ручном тестировании после изменения товара или оформления заказа стоит учитывать небольшую задержку синхронизации
+
+## Состав сервисов
 
 - `supplier-service`
 - `customer-service`
-- `supplier-postgres`
-- `customer-postgres`
+- `audit-consumer`
 - `kafka-broker`
 - `kafka-ui`
-- `audit-consumer`
+- `supplier-postgres`
+- `customer-postgres`
 
-## Databases
+## Как запустить проект
 
-- `supplier_db` - основная база поставщика
-- `customer_db` - основная база покупателя
+```bash
+cd ~/Desktop/http-kafka-demo
+docker compose up --build -d
+```
 
-## Connections
+После запуска доступны:
 
-- supplier-service -> `postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db`
-- customer-service -> `postgresql+psycopg://app:app@customer-postgres:5432/customer_db`
-- audit-consumer -> `postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db`
-- Kafka bootstrap servers -> `kafka-broker:9092`
+- Supplier service: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Customer service: [http://localhost:8001/docs](http://localhost:8001/docs)
+- Kafka UI: [http://localhost:8080](http://localhost:8080)
 
-## Supplier Service API
+## Основные API-сценарии
 
-### Suppliers
+### `supplier-service`
+
+#### Suppliers
 
 - `POST /suppliers`
 - `GET /suppliers`
@@ -48,93 +52,160 @@ Simple marketplace demo for local QA practice.
 - `PUT /suppliers/{id}`
 - `DELETE /suppliers/{id}`
 
-### Products
+#### Products
 
 - `POST /products`
 - `GET /products`
 - `GET /products/{id}`
 - `PUT /products/{id}`
-- `POST /warehouses/{warehouse_id}/stocks`
 - `DELETE /products/{id}`
+- `POST /warehouses/{warehouse_id}/stocks`
 
-Product fields:
+Поля товара:
 
-- `name` - non-empty product name
-- `price` - must be greater than `0`
-- `stocks` - aggregated stock, must be non-negative
-- `is_active` - whether the product can be purchased
-- `is_archived` - archived product flag
+- `name` — непустое название
+- `price` — цена должна быть больше `0`
+- `stocks` — агрегированный остаток, не может быть отрицательным
+- `is_active` — доступен ли товар для покупки
+- `is_archived` — архивный ли товар
 
-List endpoints return:
+#### Warehouses
 
-```json
-{
-  "items": [],
-  "count": 0
-}
-```
+- `POST /warehouses`
+- `GET /warehouses`
+- `GET /warehouses/{warehouse_id}`
+- `PUT /warehouses/{warehouse_id}`
+- `DELETE /warehouses/{warehouse_id}`
 
-## Customer Service API
+### `customer-service`
 
-### Users
+#### Users
 
 - `POST /users`
 - `GET /users`
 - `GET /users/{id}`
 
-### Favorites
+#### Favorites
 
 - `POST /favorites`
 - `GET /favorites?user_id=1`
 - `DELETE /favorites/{product_id}?user_id=1`
 
-### Cart
+#### Cart
 
 - `GET /cart?user_id=1`
 - `POST /cart`
 - `PATCH /cart/{product_id}`
 - `DELETE /cart/{product_id}?user_id=1`
 
-### Orders
+#### Orders
 
 - `POST /orders`
 - `GET /orders?user_id=1`
 - `GET /orders/{order_id}?user_id=1`
 - `POST /orders/{order_id}/cancel?user_id=1`
 
-## Kafka Topics
+## Как тестировать вручную
 
-- `supplier-events`
-- `product-events`
-- `order-events`
-- `product-stock-events`
+Ниже базовый happy-path, который удобно прогонять руками через Swagger или `curl`.
 
-## Business Rules
+### Сценарий 1. Создать поставщика и товар
 
-- stock source of truth is `supplier-service`
-- stock field name is `stocks`
-- products expose `total_price = price * stocks`
-- cart and orders expose item totals plus full totals
-- `POST /products` and `PUT /products/{id}` do not edit stock directly
-- `POST /warehouses/{warehouse_id}/stocks` updates stock values through warehouse rows
-- product name must not be empty
-- product price must be greater than zero
-- archived product cannot be active at the same time
-- stock cannot be negative
-- favorites do not affect cart or orders
-- inactive or archived products cannot be added to cart
-- cart quantity cannot exceed current stock
-- orders can be created from explicit `items` or from the cart
-- inactive or archived products cannot be ordered
-- orders with quantity above available stock fail with `insufficient_stock`
-- order creation creates `orders` and `order_items`, clears the cart, and publishes `ORDER_CREATED`
-- new orders start with status `created`
-- `POST /orders/{order_id}/cancel` changes status to `cancelled`
-- in this simple version, order cancellation does not restore stock in supplier-service
+1. Создать поставщика через `POST /suppliers`
+2. Создать склад через `POST /warehouses`
+3. Создать товар через `POST /products`
+4. Назначить остаток через `POST /warehouses/{warehouse_id}/stocks`
+5. Проверить товар через `GET /products`
 
-## Error Format
+### Сценарий 2. Проверить customer catalog
 
-All services return errors in the same JSON shape:
+1. Открыть `GET /products` в `customer-service`
+2. Убедиться, что товар появился в локальной копии каталога
+3. Если товар не появился сразу, подождать немного и повторить запрос
+
+Это нормальное поведение для текущей схемы, потому что синхронизация идёт через Kafka.
+
+### Сценарий 3. Проверить `favorites`
+
+1. Создать пользователя через `POST /users`
+2. Добавить товар в избранное через `POST /favorites`
+3. Проверить список через `GET /favorites?user_id=...`
+4. Удалить товар из избранного через `DELETE /favorites/{product_id}?user_id=...`
+
+### Сценарий 4. Проверить `cart`
+
+1. Добавить товар в корзину через `POST /cart`
+2. Изменить количество через `PATCH /cart/{product_id}`
+3. Проверить корзину через `GET /cart?user_id=...`
+4. Удалить товар через `DELETE /cart/{product_id}?user_id=...`
+
+### Сценарий 5. Проверить `orders`
+
+1. Добавить товар в корзину
+2. Создать заказ через `POST /orders`
+3. Проверить заказ через `GET /orders?user_id=...`
+4. Проверить конкретный заказ через `GET /orders/{order_id}?user_id=...`
+5. Отменить заказ через `POST /orders/{order_id}/cancel?user_id=...`
+
+Что стоит отдельно проверить:
+
+- после создания заказа корзина очищается
+- заказ создаётся со статусом `created`
+- после отмены статус становится `cancelled`
+
+## Негативные сценарии
+
+### `insufficient_stock`
+
+Проверить заказ с количеством больше доступного остатка.
+
+Ожидаемое поведение:
+
+- HTTP `409`
+- error code `insufficient_stock`
+
+### `product_inactive`
+
+Проверить добавление в корзину или оформление заказа для товара с `is_active=false`.
+
+Ожидаемое поведение:
+
+- HTTP `409`
+- error code `product_inactive`
+
+### `product_archived`
+
+Проверить добавление в корзину или оформление заказа для товара с `is_archived=true`.
+
+Ожидаемое поведение:
+
+- HTTP `409`
+- error code `product_archived`
+
+### `cart_is_empty`
+
+Проверить `POST /orders` без `items` и с пустой корзиной пользователя.
+
+Ожидаемое поведение:
+
+- HTTP `400`
+- error code `cart_is_empty`
+
+### `invalid_quantity`
+
+Проверить:
+
+- `POST /cart` с `quantity=0`
+- `PATCH /cart/{product_id}` с `quantity=0`
+
+Ожидаемое поведение:
+
+- HTTP `400`
+- validation error в едином формате
+
+## Формат ошибок
+
+Во всех сервисах ошибки возвращаются в одном формате:
 
 ```json
 {
@@ -145,7 +216,7 @@ All services return errors in the same JSON shape:
 }
 ```
 
-Examples:
+Примеры:
 
 ```json
 {
@@ -165,7 +236,113 @@ Examples:
 }
 ```
 
-## Request Examples
+```json
+{
+  "error": {
+    "code": "cart_is_empty",
+    "message": "Cart is empty and no order items were provided"
+  }
+}
+```
+
+Типовые error codes:
+
+- `product_not_found`
+- `invalid_quantity`
+- `insufficient_stock`
+- `product_inactive`
+- `product_archived`
+- `cart_is_empty`
+- `order_not_found`
+- `order_already_cancelled`
+
+## Бизнес-правила
+
+### Товары
+
+- товар нельзя создать с пустым `name`
+- товар нельзя создать или обновить с `price <= 0`
+- `stocks` не может быть отрицательным
+- архивный товар не должен одновременно быть активным
+- `supplier-service` — источник истины по остаткам
+
+### Customer-side поведение
+
+- `favorites` не влияет на `cart` и `orders`
+- неактивный товар нельзя добавить в корзину
+- архивный товар нельзя добавить в корзину
+- неактивный товар нельзя купить
+- архивный товар нельзя купить
+- нельзя оформить заказ с количеством больше доступного `stocks`
+- `POST /orders` может брать товары либо из корзины, либо из переданного массива `items`
+
+### Заказы
+
+- заказ создаётся со статусом `created`
+- заказ можно перевести в `cancelled`
+- в текущей реализации отмена заказа не возвращает stock обратно в `supplier-service`
+
+## Известные ограничения
+
+- между `supplier-service` и `customer-service` есть eventual consistency
+- сразу после создания товара или изменения stock локальная копия в `customer-service` может обновиться не мгновенно
+- отмена заказа не восстанавливает stock
+- проект ориентирован на локальное ручное тестирование, а не на production-ready сценарии
+
+## Ответы API, полезные для QA
+
+### List responses
+
+Списки возвращаются в формате:
+
+```json
+{
+  "items": [],
+  "count": 0
+}
+```
+
+Это относится, например, к:
+
+- `GET /suppliers`
+- `GET /warehouses`
+- `GET /products`
+- `GET /users`
+- `GET /favorites`
+- `GET /orders`
+
+### Cart response
+
+Корзина содержит:
+
+- `items`
+- `count`
+- `total_items_count`
+- `total_price`
+
+### Order response
+
+Заказ содержит:
+
+- `items`
+- `total_items_count`
+- `total_price`
+- `status`
+- `order_number`
+
+## На что обращать внимание при тестировании Kafka / eventual consistency
+
+- после `POST /products` товар может появиться в `customer-service` не сразу
+- после изменения stock в `supplier-service` остаток в `customer-service` тоже может обновиться с небольшой задержкой
+- после `POST /orders` остаток сначала уменьшается в `supplier-service`, затем обновляется в `customer-service`
+- для наблюдения событий удобно использовать `Kafka UI`
+
+Практически это значит:
+
+- если сразу после действия данные не совпадают, стоит повторить `GET` через короткий интервал
+- для негативных сценариев, завязанных на stock, лучше сначала убедиться, что локальная копия товара уже синхронизировалась
+
+## Примеры `curl`-запросов
 
 ### Add to favorites
 
@@ -209,7 +386,7 @@ curl "http://localhost:8001/cart?user_id=1"
 
 ### Create order
 
-From cart:
+Из корзины:
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -219,7 +396,7 @@ curl -X POST http://localhost:8001/orders \
   }'
 ```
 
-From explicit items:
+Напрямую по переданным товарам:
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -237,25 +414,13 @@ curl -X POST http://localhost:8001/orders \
 curl "http://localhost:8001/orders?user_id=1"
 ```
 
-Cancel order:
+### Cancel order
 
 ```bash
 curl -X POST "http://localhost:8001/orders/1/cancel?user_id=1"
 ```
 
-## How To Test Manually
-
-1. Create a supplier with `POST /suppliers`
-2. Create a product with `POST /products`
-3. Add stock through `POST /warehouses/{warehouse_id}/stocks`
-4. Create a user with `POST /users`
-5. Add the product to cart with `POST /cart`
-6. Create an order with `POST /orders`
-7. Cancel the order with `POST /orders/{order_id}/cancel?user_id=...`
-
-## Negative Scenarios
-
-Empty product name:
+### Empty product name
 
 ```bash
 curl -X POST http://localhost:8000/products \
@@ -270,7 +435,7 @@ curl -X POST http://localhost:8000/products \
   }'
 ```
 
-Product price `<= 0`:
+### Product price `<= 0`
 
 ```bash
 curl -X POST http://localhost:8000/products \
@@ -285,7 +450,7 @@ curl -X POST http://localhost:8000/products \
   }'
 ```
 
-Add inactive or archived product to cart:
+### Add inactive or archived product to cart
 
 ```bash
 curl -X POST http://localhost:8001/cart \
@@ -297,7 +462,7 @@ curl -X POST http://localhost:8001/cart \
   }'
 ```
 
-Update cart quantity to `0`:
+### Update cart quantity to `0`
 
 ```bash
 curl -X PATCH http://localhost:8001/cart/1 \
@@ -308,7 +473,7 @@ curl -X PATCH http://localhost:8001/cart/1 \
   }'
 ```
 
-Create order with empty cart:
+### Create order with empty cart
 
 ```bash
 curl -X POST http://localhost:8001/orders \
@@ -317,28 +482,3 @@ curl -X POST http://localhost:8001/orders \
     "user_id": 1
   }'
 ```
-
-## What To Verify In QA
-
-- product creation and update with valid and invalid `name`, `price`, `is_active`, `is_archived`
-- list responses include `items` and `count`
-- cart response includes `total_items_count`
-- order response includes `total_items_count`
-- inactive and archived products cannot be added to cart
-- inactive and archived products cannot be ordered
-- `insufficient_stock` is returned as `409`
-- order status changes from `created` to `cancelled`
-- supplier and customer services stay in sync on stock changes through Kafka
-
-## Запуск
-
-```bash
-cd ~/Desktop/http-kafka-demo
-docker compose up --build -d
-```
-
-## Swagger UI
-
-- Supplier service: [http://localhost:8000/docs](http://localhost:8000/docs)
-- Customer service: [http://localhost:8001/docs](http://localhost:8001/docs)
-- Kafka UI: [http://localhost:8080](http://localhost:8080)
