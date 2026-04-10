@@ -4,8 +4,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
-    full_name: str = Field(min_length=3, max_length=255, examples=["Buyer Ivanov"], description="Customer full name")
-    email: EmailStr = Field(examples=["buyer@example.com"], description="Customer email address")
+    full_name: str = Field(min_length=3, max_length=255, examples=["Покупатель Иванов"], description="Полное имя покупателя")
+    email: EmailStr = Field(examples=["buyer@example.com"], description="Email покупателя")
 
 
 class UserRead(UserCreate):
@@ -47,8 +47,8 @@ class ProductListRead(BaseModel):
 
 
 class FavoriteCreate(BaseModel):
-    user_id: int = Field(gt=0)
-    product_id: int = Field(gt=0)
+    user_id: int = Field(gt=0, description="Идентификатор покупателя")
+    product_id: int = Field(gt=0, description="Идентификатор товара")
 
 
 class FavoriteRead(BaseModel):
@@ -64,14 +64,14 @@ class FavoriteListRead(BaseModel):
 
 
 class CartCreate(BaseModel):
-    user_id: int = Field(gt=0)
-    product_id: int = Field(gt=0)
-    quantity: int = Field(gt=0)
+    user_id: int = Field(gt=0, description="Идентификатор покупателя")
+    product_id: int = Field(gt=0, description="Идентификатор товара")
+    quantity: int = Field(gt=0, description="Количество товара")
 
 
 class CartQuantityUpdate(BaseModel):
-    user_id: int = Field(gt=0)
-    quantity: int = Field(gt=0)
+    user_id: int = Field(gt=0, description="Идентификатор покупателя")
+    quantity: int = Field(gt=0, description="Новое количество товара")
 
 
 class CartItemRead(BaseModel):
@@ -93,13 +93,13 @@ class CartRead(BaseModel):
 
 
 class OrderCreateItem(BaseModel):
-    product_id: int = Field(gt=0)
-    quantity: int = Field(gt=0)
+    product_id: int = Field(gt=0, description="Идентификатор товара")
+    quantity: int = Field(gt=0, description="Количество товара в заказе")
 
 
 class OrderCreate(BaseModel):
-    user_id: int = Field(gt=0)
-    items: list[OrderCreateItem] | None = Field(default=None)
+    user_id: int = Field(gt=0, description="Идентификатор покупателя")
+    items: list[OrderCreateItem] | None = Field(default=None, description="Список товаров для заказа. Если не передан, заказ собирается из корзины.")
 
 
 class OrderItemRead(BaseModel):

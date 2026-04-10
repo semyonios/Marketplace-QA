@@ -45,15 +45,15 @@ def ensure_supplier_schema() -> None:
             connection.execute(text("ALTER TABLE products ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
 
 app = FastAPI(
-    title="Supplier Service",
-    description="Supplier-side management for suppliers, products, warehouses, and stock publishing to Kafka.",
+    title="Сервис поставщика",
+    description="API для управления поставщиками, товарами, складами и остатками с публикацией событий в Kafka.",
     version="1.0.0",
     openapi_tags=[
-        {"name": "Service API", "description": "Technical and health endpoints."},
-        {"name": "Suppliers API", "description": "Create, read, update, and delete suppliers."},
-        {"name": "Products API", "description": "Create, read, update, and delete products."},
-        {"name": "Stock API", "description": "Update product stock in warehouses."},
-        {"name": "Warehouses API", "description": "Create, read, update, and delete warehouses."},
+        {"name": "Служебное API", "description": "Технические ручки сервиса и проверка доступности."},
+        {"name": "API поставщиков", "description": "Создание, просмотр, обновление и удаление поставщиков."},
+        {"name": "API товаров", "description": "Создание, просмотр, обновление и удаление товаров."},
+        {"name": "API остатков", "description": "Обновление остатков товаров на складах."},
+        {"name": "API складов", "description": "Создание, просмотр, обновление и удаление складов."},
     ],
 )
 
@@ -111,9 +111,9 @@ def ensure_product_state(is_active: bool, is_archived: bool) -> None:
 
 @app.get(
     "/health",
-    summary="Healthcheck",
-    description="Returns supplier-service availability status.",
-    tags=["Service API"],
+    summary="Проверка доступности",
+    description="Возвращает статус доступности `supplier-service`.",
+    tags=["Служебное API"],
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -123,9 +123,9 @@ def healthcheck() -> dict[str, str]:
     "/suppliers",
     response_model=SupplierRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create supplier",
-    description="Creates a supplier profile in supplier-service.",
-    tags=["Suppliers API"],
+    summary="Создать поставщика",
+    description="Создаёт нового поставщика.",
+    tags=["API поставщиков"],
 )
 def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) -> Supplier:
     supplier = Supplier(**supplier_in.model_dump())
@@ -144,9 +144,9 @@ def create_supplier(supplier_in: SupplierCreate, db: Session = Depends(get_db)) 
 @app.get(
     "/suppliers",
     response_model=SupplierListRead,
-    summary="List suppliers",
-    description="Returns all suppliers in a QA-friendly list wrapper.",
-    tags=["Suppliers API"],
+    summary="Получить список поставщиков",
+    description="Возвращает список всех поставщиков в формате `items + count`.",
+    tags=["API поставщиков"],
 )
 def list_suppliers(db: Session = Depends(get_db)) -> SupplierListRead:
     items = list(db.scalars(select(Supplier).order_by(Supplier.id)))
@@ -156,9 +156,9 @@ def list_suppliers(db: Session = Depends(get_db)) -> SupplierListRead:
 @app.get(
     "/suppliers/{supplier_id}",
     response_model=SupplierRead,
-    summary="Get supplier",
-    description="Returns a supplier by ID.",
-    tags=["Suppliers API"],
+    summary="Получить поставщика",
+    description="Возвращает поставщика по идентификатору.",
+    tags=["API поставщиков"],
 )
 def get_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Supplier:
     supplier = db.get(Supplier, supplier_id)
@@ -170,9 +170,9 @@ def get_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Supplier:
 @app.put(
     "/suppliers/{supplier_id}",
     response_model=SupplierRead,
-    summary="Update supplier",
-    description="Updates supplier profile data by ID.",
-    tags=["Suppliers API"],
+    summary="Обновить поставщика",
+    description="Обновляет данные поставщика по идентификатору.",
+    tags=["API поставщиков"],
 )
 def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session = Depends(get_db)) -> Supplier:
     supplier = db.get(Supplier, supplier_id)
@@ -197,9 +197,9 @@ def update_supplier(supplier_id: int, supplier_in: SupplierUpdate, db: Session =
     "/suppliers/{supplier_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete supplier",
-    description="Deletes a supplier by ID.",
-    tags=["Suppliers API"],
+    summary="Удалить поставщика",
+    description="Удаляет поставщика по идентификатору.",
+    tags=["API поставщиков"],
 )
 def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response:
     supplier = db.get(Supplier, supplier_id)
@@ -217,9 +217,9 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response
     "/warehouses",
     response_model=WarehouseRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create warehouse",
-    description="Creates a warehouse with name, weekday schedule, and address.",
-    tags=["Warehouses API"],
+    summary="Создать склад",
+    description="Создаёт склад с названием, графиком работы и адресом.",
+    tags=["API складов"],
 )
 def create_warehouse(warehouse_in: WarehouseCreate, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = Warehouse(**warehouse_in.model_dump())
@@ -232,9 +232,9 @@ def create_warehouse(warehouse_in: WarehouseCreate, db: Session = Depends(get_db
 @app.get(
     "/warehouses",
     response_model=WarehouseListRead,
-    summary="List warehouses",
-    description="Returns all warehouses in a QA-friendly list wrapper.",
-    tags=["Warehouses API"],
+    summary="Получить список складов",
+    description="Возвращает список всех складов в формате `items + count`.",
+    tags=["API складов"],
 )
 def list_warehouses(db: Session = Depends(get_db)) -> WarehouseListRead:
     items = list(db.scalars(select(Warehouse).order_by(Warehouse.id)))
@@ -244,9 +244,9 @@ def list_warehouses(db: Session = Depends(get_db)) -> WarehouseListRead:
 @app.get(
     "/warehouses/{warehouse_id}",
     response_model=WarehouseRead,
-    summary="Get warehouse",
-    description="Returns a warehouse by ID.",
-    tags=["Warehouses API"],
+    summary="Получить склад",
+    description="Возвращает склад по идентификатору.",
+    tags=["API складов"],
 )
 def get_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = db.get(Warehouse, warehouse_id)
@@ -258,9 +258,9 @@ def get_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Warehouse
 @app.put(
     "/warehouses/{warehouse_id}",
     response_model=WarehouseRead,
-    summary="Update warehouse",
-    description="Updates warehouse name, weekday schedule, and address.",
-    tags=["Warehouses API"],
+    summary="Обновить склад",
+    description="Обновляет название, график работы и адрес склада.",
+    tags=["API складов"],
 )
 def update_warehouse(warehouse_id: int, warehouse_in: WarehouseUpdate, db: Session = Depends(get_db)) -> Warehouse:
     warehouse = db.get(Warehouse, warehouse_id)
@@ -279,9 +279,9 @@ def update_warehouse(warehouse_id: int, warehouse_in: WarehouseUpdate, db: Sessi
     "/warehouses/{warehouse_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete warehouse",
-    description="Deletes a warehouse and recalculates affected product stock totals.",
-    tags=["Warehouses API"],
+    summary="Удалить склад",
+    description="Удаляет склад и пересчитывает агрегированные остатки затронутых товаров.",
+    tags=["API складов"],
 )
 def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Response:
     warehouse = db.get(Warehouse, warehouse_id)
@@ -306,9 +306,9 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
     "/products",
     response_model=ProductRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create product",
-    description="Creates a product for a supplier. Stock is managed separately through warehouses.",
-    tags=["Products API"],
+    summary="Создать товар",
+    description="Создаёт товар для поставщика. Остатки управляются отдельно через склады.",
+    tags=["API товаров"],
 )
 def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> ProductRead:
     supplier = db.get(Supplier, product_in.supplier_id)
@@ -330,9 +330,9 @@ def create_product(product_in: ProductCreate, db: Session = Depends(get_db)) -> 
 @app.get(
     "/products",
     response_model=ProductListRead,
-    summary="List products",
-    description="Returns all supplier products in a QA-friendly list wrapper.",
-    tags=["Products API"],
+    summary="Получить список товаров",
+    description="Возвращает список всех товаров в формате `items + count`.",
+    tags=["API товаров"],
 )
 def list_products(db: Session = Depends(get_db)) -> ProductListRead:
     items = [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
@@ -342,9 +342,9 @@ def list_products(db: Session = Depends(get_db)) -> ProductListRead:
 @app.get(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Get product",
-    description="Returns a product by ID with aggregated stock information.",
-    tags=["Products API"],
+    summary="Получить товар",
+    description="Возвращает товар по идентификатору вместе с агрегированным остатком.",
+    tags=["API товаров"],
 )
 def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
@@ -356,9 +356,9 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
 @app.put(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Update product",
-    description="Updates product fields without changing warehouse stock rows.",
-    tags=["Products API"],
+    summary="Обновить товар",
+    description="Обновляет поля товара без изменения складских строк остатков.",
+    tags=["API товаров"],
 )
 def update_product(product_id: int, product_in: ProductUpdate, db: Session = Depends(get_db)) -> ProductRead:
     product = db.get(Product, product_id)
@@ -388,9 +388,9 @@ def update_product(product_id: int, product_in: ProductUpdate, db: Session = Dep
 @app.post(
     "/warehouses/{warehouse_id}/stocks",
     response_model=ProductListRead,
-    summary="Update stock",
-    description="Updates factual stock values for products in a warehouse and publishes aggregated stock events.",
-    tags=["Stock API"],
+    summary="Обновить остатки на складе",
+    description="Обновляет фактические остатки товаров на складе и публикует агрегированные события по остаткам.",
+    tags=["API остатков"],
 )
 def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session = Depends(get_db)) -> ProductListRead:
     warehouse = db.get(Warehouse, warehouse_id)
@@ -430,9 +430,9 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     "/products/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete product",
-    description="Deletes a product by ID.",
-    tags=["Products API"],
+    summary="Удалить товар",
+    description="Удаляет товар по идентификатору.",
+    tags=["API товаров"],
 )
 def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
     product = db.get(Product, product_id)

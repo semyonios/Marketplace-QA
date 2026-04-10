@@ -44,7 +44,7 @@ docker compose up --build -d
 
 ### `supplier-service`
 
-#### Suppliers
+#### Поставщики
 
 - `POST /suppliers`
 - `GET /suppliers`
@@ -52,7 +52,7 @@ docker compose up --build -d
 - `PUT /suppliers/{id}`
 - `DELETE /suppliers/{id}`
 
-#### Products
+#### Товары
 
 - `POST /products`
 - `GET /products`
@@ -69,7 +69,7 @@ docker compose up --build -d
 - `is_active` — доступен ли товар для покупки
 - `is_archived` — архивный ли товар
 
-#### Warehouses
+#### Склады
 
 - `POST /warehouses`
 - `GET /warehouses`
@@ -79,26 +79,26 @@ docker compose up --build -d
 
 ### `customer-service`
 
-#### Users
+#### Покупатели
 
 - `POST /users`
 - `GET /users`
 - `GET /users/{id}`
 
-#### Favorites
+#### Избранное
 
 - `POST /favorites`
 - `GET /favorites?user_id=1`
 - `DELETE /favorites/{product_id}?user_id=1`
 
-#### Cart
+#### Корзина
 
 - `GET /cart?user_id=1`
 - `POST /cart`
 - `PATCH /cart/{product_id}`
 - `DELETE /cart/{product_id}?user_id=1`
 
-#### Orders
+#### Заказы
 
 - `POST /orders`
 - `GET /orders?user_id=1`
@@ -117,7 +117,7 @@ docker compose up --build -d
 4. Назначить остаток через `POST /warehouses/{warehouse_id}/stocks`
 5. Проверить товар через `GET /products`
 
-### Сценарий 2. Проверить customer catalog
+### Сценарий 2. Проверить каталог покупателя
 
 1. Открыть `GET /products` в `customer-service`
 2. Убедиться, что товар появился в локальной копии каталога

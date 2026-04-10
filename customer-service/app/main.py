@@ -37,16 +37,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Customer Service",
-    description="Customer catalog, favorites, cart, and orders backed by Kafka product synchronization.",
+    title="Сервис покупателя",
+    description="API покупателя с локальной копией каталога, избранным, корзиной и заказами. Данные по товарам синхронизируются через Kafka.",
     version="3.0.0",
     openapi_tags=[
-        {"name": "Service API", "description": "Technical and health endpoints."},
-        {"name": "Users API", "description": "Create and read customer profiles."},
-        {"name": "Catalog API", "description": "Read the local customer-facing product catalog."},
-        {"name": "Favorites API", "description": "Manage favorite products."},
-        {"name": "Cart API", "description": "Manage cart items and quantities."},
-        {"name": "Orders API", "description": "Create, read, and cancel orders."},
+        {"name": "Служебное API", "description": "Технические ручки сервиса и проверка доступности."},
+        {"name": "API покупателей", "description": "Создание и просмотр покупателей."},
+        {"name": "API каталога", "description": "Просмотр локальной копии каталога товаров."},
+        {"name": "API избранного", "description": "Работа с избранными товарами."},
+        {"name": "API корзины", "description": "Работа с корзиной и количеством товаров."},
+        {"name": "API заказов", "description": "Создание, просмотр и отмена заказов."},
     ],
 )
 
@@ -183,9 +183,9 @@ def generate_order_number(order_id: int) -> str:
 
 @app.get(
     "/health",
-    summary="Healthcheck",
-    description="Returns customer-service availability status.",
-    tags=["Service API"],
+    summary="Проверка доступности",
+    description="Возвращает статус доступности `customer-service`.",
+    tags=["Служебное API"],
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -195,9 +195,9 @@ def healthcheck() -> dict[str, str]:
     "/users",
     response_model=UserRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create user",
-    description="Creates a customer profile in customer-service.",
-    tags=["Users API"],
+    summary="Создать покупателя",
+    description="Создаёт нового покупателя.",
+    tags=["API покупателей"],
 )
 def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
     user = User(**user_in.model_dump())
@@ -214,9 +214,9 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
 @app.get(
     "/users",
     response_model=UserListRead,
-    summary="List users",
-    description="Returns all users in a QA-friendly list wrapper.",
-    tags=["Users API"],
+    summary="Получить список покупателей",
+    description="Возвращает список всех покупателей в формате `items + count`.",
+    tags=["API покупателей"],
 )
 def list_users(db: Session = Depends(get_db)) -> UserListRead:
     items = list(db.scalars(select(User).order_by(User.id)))
@@ -226,9 +226,9 @@ def list_users(db: Session = Depends(get_db)) -> UserListRead:
 @app.get(
     "/users/{user_id}",
     response_model=UserRead,
-    summary="Get user",
-    description="Returns a user by ID.",
-    tags=["Users API"],
+    summary="Получить покупателя",
+    description="Возвращает покупателя по идентификатору.",
+    tags=["API покупателей"],
 )
 def get_user(user_id: int, db: Session = Depends(get_db)) -> User:
     return validate_user(db, user_id)
@@ -237,9 +237,9 @@ def get_user(user_id: int, db: Session = Depends(get_db)) -> User:
 @app.get(
     "/products",
     response_model=ProductListRead,
-    summary="List products",
-    description="Returns the customer-facing product catalog in a QA-friendly list wrapper.",
-    tags=["Catalog API"],
+    summary="Получить каталог товаров",
+    description="Возвращает локальную копию каталога товаров в формате `items + count`.",
+    tags=["API каталога"],
 )
 def list_products(db: Session = Depends(get_db)) -> ProductListRead:
     items = [serialize_product(product) for product in db.scalars(select(Product).order_by(Product.id))]
@@ -249,9 +249,9 @@ def list_products(db: Session = Depends(get_db)) -> ProductListRead:
 @app.get(
     "/products/{product_id}",
     response_model=ProductRead,
-    summary="Get product",
-    description="Returns a single product from the local customer catalog.",
-    tags=["Catalog API"],
+    summary="Получить товар",
+    description="Возвращает товар из локальной копии каталога по идентификатору.",
+    tags=["API каталога"],
 )
 def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     product = get_existing_product(db, product_id)
@@ -262,9 +262,9 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductRead:
     "/favorites",
     response_model=FavoriteRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Add to favorites",
-    description="Adds a product to the user's favorites. Repeating the request returns the existing favorite item.",
-    tags=["Favorites API"],
+    summary="Добавить в избранное",
+    description="Добавляет товар в избранное покупателя. Повторный запрос возвращает уже существующую запись.",
+    tags=["API избранного"],
 )
 def add_to_favorites(favorite_in: FavoriteCreate, db: Session = Depends(get_db)) -> FavoriteRead:
     validate_user_and_product(db, favorite_in.user_id, favorite_in.product_id)
@@ -283,9 +283,9 @@ def add_to_favorites(favorite_in: FavoriteCreate, db: Session = Depends(get_db))
 @app.get(
     "/favorites",
     response_model=FavoriteListRead,
-    summary="List favorites",
-    description="Returns all favorite products for a user in a QA-friendly list wrapper.",
-    tags=["Favorites API"],
+    summary="Получить избранное",
+    description="Возвращает все товары из избранного покупателя в формате `items + count`.",
+    tags=["API избранного"],
 )
 def list_favorites(user_id: int, db: Session = Depends(get_db)) -> FavoriteListRead:
     validate_user(db, user_id)
@@ -297,9 +297,9 @@ def list_favorites(user_id: int, db: Session = Depends(get_db)) -> FavoriteListR
     "/favorites/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete favorite",
-    description="Deletes a favorite product by user_id and product_id.",
-    tags=["Favorites API"],
+    summary="Удалить из избранного",
+    description="Удаляет товар из избранного по `user_id` и `product_id`.",
+    tags=["API избранного"],
 )
 def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)) -> Response:
     validate_user(db, user_id)
@@ -314,9 +314,9 @@ def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)
 @app.get(
     "/cart",
     response_model=CartRead,
-    summary="Get cart",
-    description="Returns the user's cart with aggregated counters and total price.",
-    tags=["Cart API"],
+    summary="Получить корзину",
+    description="Возвращает корзину покупателя с количеством позиций, общим количеством товаров и итоговой стоимостью.",
+    tags=["API корзины"],
 )
 def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     validate_user(db, user_id)
@@ -328,9 +328,9 @@ def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     "/cart",
     response_model=CartItemRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Add to cart",
-    description="Adds a product to the cart. If the product already exists there, quantity is increased.",
-    tags=["Cart API"],
+    summary="Добавить в корзину",
+    description="Добавляет товар в корзину. Если товар уже есть в корзине, количество увеличивается.",
+    tags=["API корзины"],
 )
 def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_in.user_id, cart_in.product_id)
@@ -356,9 +356,9 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
 @app.patch(
     "/cart/{product_id}",
     response_model=CartItemRead,
-    summary="Update cart item quantity",
-    description="Updates quantity for a product already present in the user's cart.",
-    tags=["Cart API"],
+    summary="Изменить количество в корзине",
+    description="Изменяет количество товара, который уже находится в корзине покупателя.",
+    tags=["API корзины"],
 )
 def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_update.user_id, product_id)
@@ -378,9 +378,9 @@ def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Sessi
     "/cart/{product_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete cart item",
-    description="Deletes a product from the user's cart by user_id and product_id.",
-    tags=["Cart API"],
+    summary="Удалить из корзины",
+    description="Удаляет товар из корзины по `user_id` и `product_id`.",
+    tags=["API корзины"],
 )
 def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db)) -> Response:
     validate_user(db, user_id)
@@ -396,9 +396,9 @@ def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db
     "/orders",
     response_model=OrderRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create order",
-    description="Creates an order from explicit items or from the current cart. Cart items are removed after successful creation.",
-    tags=["Orders API"],
+    summary="Создать заказ",
+    description="Создаёт заказ из переданных `items` или из текущей корзины. После успешного создания корзина очищается.",
+    tags=["API заказов"],
 )
 def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, order_in.user_id)
@@ -447,9 +447,9 @@ def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderR
 @app.post(
     "/orders/{order_id}/cancel",
     response_model=OrderRead,
-    summary="Cancel order",
-    description="Changes order status to cancelled if it has not been cancelled yet.",
-    tags=["Orders API"],
+    summary="Отменить заказ",
+    description="Переводит заказ в статус `cancelled`, если он ещё не был отменён.",
+    tags=["API заказов"],
 )
 def cancel_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, user_id)
@@ -469,9 +469,9 @@ def cancel_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> 
 @app.get(
     "/orders",
     response_model=OrderListRead,
-    summary="List orders",
-    description="Returns all user orders in a QA-friendly list wrapper.",
-    tags=["Orders API"],
+    summary="Получить список заказов",
+    description="Возвращает все заказы покупателя в формате `items + count`.",
+    tags=["API заказов"],
 )
 def list_orders(user_id: int, db: Session = Depends(get_db)) -> OrderListRead:
     validate_user(db, user_id)
@@ -488,9 +488,9 @@ def list_orders(user_id: int, db: Session = Depends(get_db)) -> OrderListRead:
 @app.get(
     "/orders/{order_id}",
     response_model=OrderRead,
-    summary="Get order",
-    description="Returns a single order with order items by order_id and user_id.",
-    tags=["Orders API"],
+    summary="Получить заказ",
+    description="Возвращает заказ по `order_id` и `user_id` вместе с позициями заказа.",
+    tags=["API заказов"],
 )
 def get_order(order_id: int, user_id: int, db: Session = Depends(get_db)) -> OrderRead:
     validate_user(db, user_id)
