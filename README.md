@@ -202,7 +202,7 @@ docker compose up --build -d
 Ожидаемое поведение:
 
 - HTTP `400`
-- validation error в едином формате
+- error code `validation_error`
 
 ## Формат ошибок
 
@@ -222,7 +222,7 @@ docker compose up --build -d
 ```json
 {
   "error": {
-    "code": "invalid_quantity",
+    "code": "validation_error",
     "message": "quantity: Quantity must be greater than zero"
   }
 }
@@ -249,7 +249,7 @@ docker compose up --build -d
 Типовые error codes:
 
 - `product_not_found`
-- `invalid_quantity`
+- `validation_error`
 - `insufficient_stock`
 - `product_inactive`
 - `product_archived`
