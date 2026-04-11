@@ -183,6 +183,15 @@ docker compose up --build -d
 - HTTP `409`
 - error code `product_archived`
 
+### `supplier_has_products`
+
+Проверить `DELETE /suppliers/{id}` для поставщика, у которого есть связанные товары.
+
+Ожидаемое поведение:
+
+- HTTP `409`
+- error code `supplier_has_products`
+
 ### `cart_is_empty`
 
 Проверить `POST /orders` без `items` и с пустой корзиной пользователя.
@@ -253,6 +262,7 @@ docker compose up --build -d
 - `insufficient_stock`
 - `product_inactive`
 - `product_archived`
+- `supplier_has_products`
 - `cart_is_empty`
 - `order_not_found`
 - `order_already_cancelled`

@@ -206,6 +206,10 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response
     if not supplier:
         raise HTTPException(status_code=404, detail="supplier_not_found")
 
+    has_products = db.scalar(select(Product.id).where(Product.supplier_id == supplier_id).limit(1))
+    if has_products is not None:
+        raise HTTPException(status_code=409, detail="supplier_has_products")
+
     payload = SupplierRead.model_validate(supplier).model_dump(mode="json")
     db.delete(supplier)
     db.commit()
