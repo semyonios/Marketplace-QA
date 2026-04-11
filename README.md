@@ -30,7 +30,8 @@
 ## Как запустить проект
 
 ```bash
-cd ~/Desktop/http-kafka-demo
+git clone git@github.com:semyonios/Marketplace-QA.git
+cd Marketplace-QA
 docker compose up --build -d
 ```
 
