@@ -70,6 +70,8 @@ docker compose up --build -d
 - `is_active` — доступен ли товар для покупки
 - `is_archived` — архивный ли товар
 
+При `DELETE /products/{id}` товар не удаляется физически, а переводится в состояние `is_active=false` и `is_archived=true`.
+
 #### Склады
 
 - `POST /warehouses`

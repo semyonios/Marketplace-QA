@@ -435,7 +435,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     summary="Удалить товар",
-    description="Удаляет товар по идентификатору.",
+    description="Архивирует товар по идентификатору.",
     tags=["API товаров"],
 )
 def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
@@ -443,12 +443,11 @@ def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
     if not product:
         raise HTTPException(status_code=404, detail="product_not_found")
 
-    stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
-    for row in stock_rows:
-        db.delete(row)
+    product.is_active = False
+    product.is_archived = True
+    db.commit()
+    db.refresh(product)
 
     payload = serialize_product(product).model_dump(mode="json")
-    db.delete(product)
-    db.commit()
-    publish_product_event("PRODUCT_DELETED", payload)
+    publish_product_event("PRODUCT_UPDATED", payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
