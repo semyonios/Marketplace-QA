@@ -19,6 +19,7 @@ class UserRead(UserCreate):
 
 class ProductRead(BaseModel):
     id: int
+    supplier_id: int | None
     name: str
     description: str | None
     price: float
@@ -31,6 +32,7 @@ class ProductRead(BaseModel):
 
 class ProductSummary(BaseModel):
     id: int
+    supplier_id: int | None
     name: str
     price: float
     stocks: int
@@ -88,6 +90,9 @@ class CartItemRead(BaseModel):
 
 
 class CartRead(BaseModel):
+    cart_id: uuid.UUID
+    cart_version: int
+    supplier_id: int | None
     items: list[CartItemRead]
     count: int
     total_items_count: int

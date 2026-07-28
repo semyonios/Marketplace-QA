@@ -14,9 +14,9 @@ from sqlalchemy.orm import sessionmaker
 from app.api.dependencies import get_db
 from app.config import Settings
 from app.database import Base
-from app.enums import BusinessStatus, OperationState, ReservationState
+from app.enums import ActorType, BusinessStatus, OperationState, ReservationState
 from app.main import create_app
-from app.models import Order, OrderItem
+from app.models import Order, OrderItem, OrderStatusHistory
 from app.schemas import (
     CustomerOrderListResponse,
     OrderResponse,
@@ -156,6 +156,59 @@ def test_customer_gets_own_order(read_client, read_session_factory) -> None:
     assert response.json()["customer_id"] == 101
     assert response.json()["supplier_id"] == 201
     assert response.json()["items"][0]["unit_price"] == "12.50"
+
+
+@pytest.mark.integration
+def test_order_detail_exposes_append_only_history(read_client, read_session_factory) -> None:
+    order_id = _persist_order(read_session_factory)
+    correlation_id = uuid.uuid4()
+    with read_session_factory.begin() as session:
+        session.add(
+            OrderStatusHistory(
+                id=uuid.uuid4(),
+                order_id=order_id,
+                business_status_before=None,
+                business_status_after=BusinessStatus.PENDING_RESERVATION,
+                operation_state_before=None,
+                operation_state_after=OperationState.NONE,
+                reservation_state_before=None,
+                reservation_state_after=ReservationState.REQUESTED,
+                trigger="CREATE_ORDER",
+                actor_type=ActorType.CUSTOMER,
+                actor_id=101,
+                event_id=None,
+                correlation_id=correlation_id,
+                version_before=0,
+                version_after=1,
+            )
+        )
+
+    response = read_client.get(
+        f"/api/v1/customers/101/orders/{order_id}",
+        headers=_headers(role="CUSTOMER", subject_id=101),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["history"] == [
+        {
+            "history_id": response.json()["history"][0]["history_id"],
+            "trigger": "CREATE_ORDER",
+            "actor_type": "CUSTOMER",
+            "actor_id": 101,
+            "event_id": None,
+            "business_status_before": None,
+            "business_status_after": "PENDING_RESERVATION",
+            "operation_state_before": None,
+            "operation_state_after": "NONE",
+            "reservation_state_before": None,
+            "reservation_state_after": "REQUESTED",
+            "version_before": 0,
+            "version_after": 1,
+            "reason": None,
+            "correlation_id": str(correlation_id),
+            "created_at": response.json()["history"][0]["created_at"],
+        }
+    ]
 
 
 @pytest.mark.integration

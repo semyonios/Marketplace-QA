@@ -80,6 +80,8 @@ def serialize_product(product: Product) -> ProductRead:
         is_active=product.is_active,
         is_archived=product.is_archived,
         stocks=product.stocks,
+        reserved_stocks=product.reserved_stocks,
+        available_stocks=product.available_stocks,
         total_price=round(product.price * product.stocks, 2),
         created_at=product.created_at,
     )

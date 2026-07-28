@@ -110,6 +110,8 @@ class ProductUpdate(BaseModel):
 class ProductRead(ProductBase):
     id: int
     stocks: int = Field(ge=0, examples=[10], description="Агрегированный остаток по всем складам")
+    reserved_stocks: int = Field(ge=0, description="Количество в активных резервах")
+    available_stocks: int = Field(ge=0, description="Доступный остаток `stocks - reserved_stocks`")
     total_price: float = Field(ge=0, examples=[9999.9], description="Расчётное значение `price * stocks`")
     created_at: datetime
 

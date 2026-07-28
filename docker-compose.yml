@@ -380,6 +380,27 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+  frontend:
+    build:
+      context: ./frontend
+    container_name: marketplace-frontend
+    hostname: frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      customer-service:
+        condition: service_started
+      supplier-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   audit-consumer:
     build:
       context: ./audit-consumer

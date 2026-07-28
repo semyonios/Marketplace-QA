@@ -108,6 +108,25 @@ class AvailableActionsResponse(BaseModel):
     can_refresh: bool
 
 
+class OrderHistoryResponse(BaseModel):
+    history_id: uuid.UUID
+    trigger: str
+    actor_type: str
+    actor_id: int | None
+    event_id: uuid.UUID | None
+    business_status_before: str | None
+    business_status_after: str
+    operation_state_before: str | None
+    operation_state_after: str
+    reservation_state_before: str | None
+    reservation_state_after: str
+    version_before: int
+    version_after: int
+    reason: OrderReasonResponse | None
+    correlation_id: uuid.UUID
+    created_at: datetime
+
+
 class OrderResponse(BaseModel):
     order_id: uuid.UUID
     customer_id: int
@@ -127,6 +146,7 @@ class OrderResponse(BaseModel):
     updated_at: datetime
     correlation_id: uuid.UUID
     available_actions: AvailableActionsResponse
+    history: list[OrderHistoryResponse]
 
 
 class CustomerOrderListItem(BaseModel):

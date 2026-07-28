@@ -7,6 +7,7 @@ from ..models import Order
 from ..schemas import (
     AvailableActionsResponse,
     CustomerOrderListItem,
+    OrderHistoryResponse,
     OrderItemResponse,
     OrderReasonResponse,
     OrderResponse,
@@ -78,6 +79,46 @@ def map_order_to_response(order: Order, *, actor_role: str) -> OrderResponse:
         updated_at=order.updated_at,
         correlation_id=order.correlation_id,
         available_actions=map_available_actions(order, actor_role=actor_role),
+        history=[
+            OrderHistoryResponse(
+                history_id=entry.id,
+                trigger=entry.trigger,
+                actor_type=entry.actor_type.value,
+                actor_id=entry.actor_id,
+                event_id=entry.event_id,
+                business_status_before=(
+                    entry.business_status_before.value
+                    if entry.business_status_before
+                    else None
+                ),
+                business_status_after=entry.business_status_after.value,
+                operation_state_before=(
+                    entry.operation_state_before.value
+                    if entry.operation_state_before
+                    else None
+                ),
+                operation_state_after=entry.operation_state_after.value,
+                reservation_state_before=(
+                    entry.reservation_state_before.value
+                    if entry.reservation_state_before
+                    else None
+                ),
+                reservation_state_after=entry.reservation_state_after.value,
+                version_before=entry.version_before,
+                version_after=entry.version_after,
+                reason=(
+                    OrderReasonResponse(code=entry.reason_code, text=entry.reason_text)
+                    if entry.reason_code
+                    else None
+                ),
+                correlation_id=entry.correlation_id,
+                created_at=entry.created_at,
+            )
+            for entry in sorted(
+                order.history,
+                key=lambda candidate: (candidate.version_after, candidate.created_at),
+            )
+        ],
     )
 
 

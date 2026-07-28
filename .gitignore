@@ -6,3 +6,10 @@ __pycache__/
 .vscode/
 .DS_Store
 .postman
+
+# Frontend build and package-manager artifacts
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+*.tsbuildinfo

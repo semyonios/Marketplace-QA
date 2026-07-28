@@ -143,6 +143,7 @@ def mark_cart_mutated(cart_state: CartState, *, newly_created: bool) -> None:
 def serialize_product(product: Product) -> ProductRead:
     return ProductRead(
         id=product.id,
+        supplier_id=product.supplier_id,
         name=product.name,
         description=product.description,
         price=product.price,
@@ -157,6 +158,7 @@ def serialize_product(product: Product) -> ProductRead:
 def serialize_product_summary(product: Product) -> ProductSummary:
     return ProductSummary(
         id=product.id,
+        supplier_id=product.supplier_id,
         name=product.name,
         price=product.price,
         stocks=product.stocks,
@@ -189,9 +191,21 @@ def serialize_cart_item(db: Session, cart_item: CartItem) -> CartItemRead:
     )
 
 
-def serialize_cart(db: Session, cart_items: list[CartItem]) -> CartRead:
+def serialize_cart(db: Session, cart_items: list[CartItem], *, user_id: int) -> CartRead:
     items = [serialize_cart_item(db, cart_item) for cart_item in cart_items]
+    cart_state, newly_created = get_or_create_cart_state(db, user_id)
+    if newly_created:
+        db.commit()
+        db.refresh(cart_state)
+    supplier_ids = {
+        item.product.supplier_id
+        for item in items
+        if item.product.supplier_id is not None
+    }
     return CartRead(
+        cart_id=cart_state.id,
+        cart_version=cart_state.version,
+        supplier_id=next(iter(supplier_ids)) if len(supplier_ids) == 1 else None,
         items=items,
         count=len(items),
         total_items_count=sum(item.quantity for item in items),
@@ -371,7 +385,7 @@ def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)
 def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     validate_user(db, user_id)
     cart_items = list(db.scalars(select(CartItem).where(CartItem.user_id == user_id).order_by(CartItem.id)))
-    return serialize_cart(db, cart_items)
+    return serialize_cart(db, cart_items, user_id=user_id)
 
 
 @app.get(
@@ -483,6 +497,18 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
     product = validate_user_and_product(db, cart_in.user_id, cart_in.product_id)
     ensure_product_can_be_purchased(product)
     cart_state, newly_created = get_or_create_cart_state(db, cart_in.user_id, lock=True)
+    cart_supplier_id = db.scalar(
+        select(Product.supplier_id)
+        .join(CartItem, CartItem.product_id == Product.id)
+        .where(CartItem.user_id == cart_in.user_id)
+        .limit(1)
+    )
+    if (
+        cart_supplier_id is not None
+        and product.supplier_id is not None
+        and cart_supplier_id != product.supplier_id
+    ):
+        raise HTTPException(status_code=409, detail="multi_supplier_cart")
     cart_item = db.scalar(
         select(CartItem).where(CartItem.user_id == cart_in.user_id, CartItem.product_id == cart_in.product_id)
     )

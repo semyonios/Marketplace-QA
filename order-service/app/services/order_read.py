@@ -66,7 +66,7 @@ def get_customer_order(
 ) -> Order | None:
     return session.scalar(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items), selectinload(Order.history))
         .where(Order.id == order_id, Order.customer_id == customer_id)
     )
 
@@ -79,7 +79,7 @@ def get_supplier_order(
 ) -> Order | None:
     return session.scalar(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items), selectinload(Order.history))
         .where(Order.id == order_id, Order.supplier_id == supplier_id)
     )
 
