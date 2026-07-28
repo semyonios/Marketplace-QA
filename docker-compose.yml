@@ -108,15 +108,111 @@ services:
       KAFKA_SUPPLIER_TOPIC: supplier-events
       KAFKA_PRODUCT_TOPIC: product-events
       KAFKA_PRODUCT_STOCK_TOPIC: product-stock-events
-      KAFKA_ORDER_TOPIC: order-events
-      KAFKA_ORDER_GROUP_ID: supplier-order-events-consumer-group
+      SERVICE_NAME: supplier-service
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      ALEMBIC_CONFIG: /app/alembic.ini
+      READINESS_TIMEOUT_SECONDS: 2
+      RESERVATION_CONSUMER_ENABLED: "true"
+      SUPPLIER_OUTBOX_PUBLISHER_ENABLED: "true"
+      KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
+      KAFKA_STOCK_EVENTS_TOPIC: marketplace.stock.events.v1
+      KAFKA_DLQ_TOPIC: marketplace.order.dlq.v1
     ports:
       - "8000:8000"
     depends_on:
       supplier-postgres:
         condition: service_healthy
+      supplier-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  supplier-migrations:
+    build:
+      context: ./supplier-service
+    container_name: supplier-migrations
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
+      ALEMBIC_CONFIG: /app/alembic.ini
+    command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    depends_on:
+      supplier-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  supplier-reservation-consumer:
+    build:
+      context: ./supplier-service
+    container_name: supplier-reservation-consumer
+    hostname: supplier-reservation-consumer
+    command: ["python", "-m", "app.stock_consumer"]
+    environment:
+      SERVICE_NAME: supplier-service
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
+      ALEMBIC_CONFIG: /app/alembic.ini
+      LOG_LEVEL: INFO
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      RESERVATION_CONSUMER_ENABLED: "true"
+      RESERVATION_CONSUMER_GROUP_ID: supplier-service-stock-commands-v1
+      RESERVATION_CONSUMER_NAME: supplier-service-stock-commands-v1
+      CONSUMER_MAX_ATTEMPTS: 3
+      CONSUMER_POLL_SECONDS: 1
+      KAFKA_DELIVERY_TIMEOUT_SECONDS: 10
+      KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
+      KAFKA_STOCK_EVENTS_TOPIC: marketplace.stock.events.v1
+      KAFKA_DLQ_TOPIC: marketplace.order.dlq.v1
+    depends_on:
+      supplier-postgres:
+        condition: service_healthy
+      supplier-migrations:
+        condition: service_completed_successfully
       kafka-broker:
-        condition: service_started
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  supplier-outbox-publisher:
+    build:
+      context: ./supplier-service
+    container_name: supplier-outbox-publisher
+    hostname: supplier-outbox-publisher
+    command: ["python", "-m", "app.outbox_publisher"]
+    environment:
+      SERVICE_NAME: supplier-service
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
+      ALEMBIC_CONFIG: /app/alembic.ini
+      LOG_LEVEL: INFO
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      SUPPLIER_OUTBOX_PUBLISHER_ENABLED: "true"
+      SUPPLIER_OUTBOX_POLL_INTERVAL_SECONDS: 1
+      SUPPLIER_OUTBOX_BATCH_SIZE: 100
+      SUPPLIER_OUTBOX_CLAIM_LEASE_SECONDS: 30
+      SUPPLIER_OUTBOX_BASE_RETRY_DELAY_SECONDS: 1
+      SUPPLIER_OUTBOX_MAX_RETRY_DELAY_SECONDS: 30
+      SUPPLIER_OUTBOX_MAX_ATTEMPTS: 10
+      KAFKA_DELIVERY_TIMEOUT_SECONDS: 10
+      KAFKA_STOCK_EVENTS_TOPIC: marketplace.stock.events.v1
+    depends_on:
+      supplier-postgres:
+        condition: service_healthy
+      supplier-migrations:
+        condition: service_completed_successfully
+      kafka-broker:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
 
   customer-service:
     build:
