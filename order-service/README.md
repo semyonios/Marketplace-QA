@@ -48,6 +48,17 @@ curl -i http://localhost:8002/api/v1/orders \
 
 Первый успешный запрос возвращает `202`, replay того же key/body — `200`, тот же key с другим semantic body — `409`. В одной финальной транзакции создаются Order, Items, начальная History, completed idempotency result и outbox templates `OrderCreated`/`StockReservationRequested`.
 
+## Чтение заказов
+
+Customer и Supplier читают только собственные заказы через test-user context:
+
+- `GET /api/v1/customers/{customer_id}/orders`
+- `GET /api/v1/customers/{customer_id}/orders/{order_id}`
+- `GET /api/v1/suppliers/{supplier_id}/orders`
+- `GET /api/v1/suppliers/{supplier_id}/orders/{order_id}`
+
+Списки поддерживают `page`, `limit` до 100, повторяемый business `status`, UTC `created_from` и `created_to`. Detail возвращает public Order representation, actor-specific `available_actions` и `ETag: "<version>"`; чужой или отсутствующий Order маскируется как `404 order_not_found`.
+
 ## Локальный запуск
 
 Из каталога `order-service` при доступной PostgreSQL на `localhost:5434`:

@@ -64,3 +64,14 @@ def require_customer_actor(actor: TestActor = Depends(get_test_actor)) -> TestAc
             status_code=403,
         )
     return actor
+
+
+def require_supplier_actor(actor: TestActor = Depends(get_test_actor)) -> TestActor:
+    if actor.role != "SUPPLIER":
+        raise ServiceError(
+            code="order_access_forbidden",
+            category="FORBIDDEN",
+            message="Supplier role is required",
+            status_code=403,
+        )
+    return actor

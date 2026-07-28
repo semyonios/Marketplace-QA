@@ -74,10 +74,19 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
-        customer_id_error = any(
-            "customer_id" in error["loc"]
-            for error in exc.errors()
-        )
+        locations = [error["loc"] for error in exc.errors()]
+        if any("customer_id" in location for location in locations):
+            code = "invalid_customer_id"
+            message = "Customer identifier must be positive"
+        elif any("supplier_id" in location for location in locations):
+            code = "invalid_supplier_id"
+            message = "Supplier identifier must be positive"
+        elif any("order_id" in location for location in locations):
+            code = "invalid_order_id"
+            message = "Order identifier is invalid"
+        else:
+            code = "invalid_request"
+            message = "Request validation failed"
         field_errors = [
             {
                 "field": ".".join(str(part) for part in error["loc"] if part != "body"),
@@ -87,9 +96,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         ]
         return _error_response(
             ServiceError(
-                code="invalid_customer_id" if customer_id_error else "invalid_request",
+                code=code,
                 category="VALIDATION",
-                message="Customer identifier must be positive" if customer_id_error else "Request validation failed",
+                message=message,
                 status_code=400,
                 field_errors=field_errors,
             )

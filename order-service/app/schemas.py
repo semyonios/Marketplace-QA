@@ -89,3 +89,44 @@ class OrderResponse(BaseModel):
     updated_at: datetime
     correlation_id: uuid.UUID
     available_actions: AvailableActionsResponse
+
+
+class CustomerOrderListItem(BaseModel):
+    order_id: uuid.UUID
+    supplier_id: int
+    status: str
+    version: int
+    items_count: int
+    total_amount: Decimal
+    currency: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupplierOrderListItem(BaseModel):
+    order_id: uuid.UUID
+    customer_id: int
+    supplier_id: int
+    status: str
+    version: int
+    items_count: int
+    total_amount: Decimal
+    currency: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CustomerOrderListResponse(BaseModel):
+    items: list[CustomerOrderListItem]
+    page: int
+    limit: int
+    count: int
+    total: int
+
+
+class SupplierOrderListResponse(BaseModel):
+    items: list[SupplierOrderListItem]
+    page: int
+    limit: int
+    count: int
+    total: int

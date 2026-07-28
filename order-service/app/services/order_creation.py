@@ -23,13 +23,11 @@ from ..enums import (
     ReservationState,
 )
 from ..errors import ServiceError
+from ..mappers.order_mapper import map_order_to_response
 from ..models import Order, OrderIdempotency, OrderItem, OrderOutbox, OrderStatusHistory
 from ..schemas import (
-    AvailableActionsResponse,
     CartSnapshot,
     CreateOrderRequest,
-    OrderItemResponse,
-    OrderReasonResponse,
     OrderResponse,
 )
 
@@ -91,7 +89,7 @@ def create_order(
 
     if claim.replay_order_id is not None:
         order = _load_order(session, claim.replay_order_id)
-        return CreateOrderResult(response=serialize_order(order), status_code=200, replayed=True)
+        return CreateOrderResult(response=map_order_to_response(order, actor_role="CUSTOMER"), status_code=200, replayed=True)
 
     existing_order = _find_order_by_cart_version(
         session,
@@ -107,7 +105,7 @@ def create_order(
             order=existing_order,
         )
         order = _load_order(session, existing_order.id)
-        return CreateOrderResult(response=serialize_order(order), status_code=200, replayed=True)
+        return CreateOrderResult(response=map_order_to_response(order, actor_role="CUSTOMER"), status_code=200, replayed=True)
 
     try:
         snapshot = cart_client.get_cart_snapshot(
@@ -141,7 +139,7 @@ def create_order(
                 order=winner,
             )
             order = _load_order(session, winner.id)
-            return CreateOrderResult(response=serialize_order(order), status_code=200, replayed=True)
+            return CreateOrderResult(response=map_order_to_response(order, actor_role="CUSTOMER"), status_code=200, replayed=True)
         _mark_claim_failed(
             session=session,
             request=request,
@@ -197,7 +195,7 @@ def create_order(
             status_code=500,
         ) from exc
 
-    return CreateOrderResult(response=serialize_order(order), status_code=202, replayed=False)
+    return CreateOrderResult(response=map_order_to_response(order, actor_role="CUSTOMER"), status_code=202, replayed=False)
 
 
 def _validate_idempotency_key(value: str | None) -> str:
@@ -753,55 +751,6 @@ def _delete_claim(
         record = _locked_claim(session, request.customer_id, key_hash)
         if record.state == IdempotencyState.IN_PROGRESS and record.owner_token == owner_token:
             session.delete(record)
-
-
-def serialize_order(order: Order) -> OrderResponse:
-    return OrderResponse(
-        order_id=order.id,
-        customer_id=order.customer_id,
-        supplier_id=order.supplier_id,
-        status=order.status.value,
-        business_status=order.business_status.value,
-        operation_state=order.operation_state.value,
-        reservation_state=order.reservation_state.value,
-        version=order.version,
-        items=[
-            OrderItemResponse(
-                product_id=item.product_id,
-                product_name=item.product_name_snapshot,
-                quantity=item.quantity,
-                unit_price=item.unit_price.quantize(MONEY_QUANT),
-                line_total=item.line_total.quantize(MONEY_QUANT),
-                currency=item.currency,
-            )
-            for item in sorted(order.items, key=lambda candidate: candidate.product_id)
-        ],
-        total_amount=order.total_amount.quantize(MONEY_QUANT),
-        currency=order.currency,
-        rejection_reason=(
-            OrderReasonResponse(code=order.rejection_reason_code, text=order.rejection_reason_text)
-            if order.rejection_reason_code
-            else None
-        ),
-        cancellation_reason=(
-            OrderReasonResponse(code=order.cancellation_reason_code, text=order.cancellation_reason_text)
-            if order.cancellation_reason_code
-            else None
-        ),
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        correlation_id=order.correlation_id,
-        available_actions=AvailableActionsResponse(
-            can_cancel=(
-                order.business_status in {BusinessStatus.PENDING_RESERVATION, BusinessStatus.RESERVED}
-                and order.operation_state == OperationState.NONE
-            ),
-            can_confirm=False,
-            can_reject=False,
-            can_retry=False,
-            can_refresh=True,
-        ),
-    )
 
 
 def _money_string(value: Decimal) -> str:

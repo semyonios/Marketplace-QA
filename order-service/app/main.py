@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request
 
+from .api.order_read_router import create_order_read_router
 from .api.order_router import create_order_router
 from .api.router import create_router
 from .clients.customer_service import CustomerServiceClient
@@ -70,6 +71,7 @@ def create_app(
     register_exception_handlers(application)
     application.include_router(create_router(settings=settings, readiness_checker=check_readiness))
     application.include_router(create_order_router())
+    application.include_router(create_order_read_router())
     return application
 
 
