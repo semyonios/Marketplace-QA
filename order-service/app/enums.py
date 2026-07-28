@@ -8,6 +8,7 @@ class StringEnum(str, Enum):
 class OrderStatus(StringEnum):
     PENDING_RESERVATION = "PENDING_RESERVATION"
     RESERVED = "RESERVED"
+    CONFIRMATION_PENDING = "CONFIRMATION_PENDING"
     CONFIRMED = "CONFIRMED"
     REJECTION_PENDING = "REJECTION_PENDING"
     REJECTED = "REJECTED"
@@ -26,6 +27,7 @@ class BusinessStatus(StringEnum):
 
 class OperationState(StringEnum):
     NONE = "NONE"
+    CONFIRMATION_PENDING = "CONFIRMATION_PENDING"
     CANCELLATION_PENDING = "CANCELLATION_PENDING"
     REJECTION_PENDING = "REJECTION_PENDING"
     FAILED = "FAILED"
@@ -47,6 +49,7 @@ class TargetTerminalStatus(StringEnum):
 
 class FailurePhase(StringEnum):
     RESERVATION = "RESERVATION"
+    CONFIRMATION = "CONFIRMATION"
     RELEASE = "RELEASE"
 
 

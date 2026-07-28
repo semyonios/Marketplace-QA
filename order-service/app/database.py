@@ -90,6 +90,7 @@ def check_readiness(
     kafka_workers_enabled = (
         application_settings.outbox_publisher_enabled
         or application_settings.stock_events_consumer_enabled
+        or application_settings.timeout_worker_enabled
     )
     if not kafka_workers_enabled:
         return ReadinessState(database="up", migrations="up_to_date", kafka="disabled")

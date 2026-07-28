@@ -61,6 +61,7 @@ class ReservationCommand:
     items: tuple[RequestedItem, ...]
     reservation_deadline_at: datetime
     correlation_id: uuid.UUID
+    causation_id: uuid.UUID | None
     envelope_hash: str
     request_hash: str
     semantic_error: str | None = None
@@ -108,6 +109,11 @@ def parse_reservation_command(
     event_id = _uuid(envelope["event_id"], "event_id")
     order_id = _uuid(envelope["aggregate_id"], "aggregate_id")
     correlation_id = _uuid(envelope["correlation_id"], "correlation_id")
+    causation_id = (
+        None
+        if envelope["causation_id"] is None
+        else _uuid(envelope["causation_id"], "causation_id")
+    )
     _timestamp(envelope["occurred_at"], "occurred_at")
 
     payload = envelope["payload"]
@@ -170,6 +176,7 @@ def parse_reservation_command(
         items=tuple(items),
         reservation_deadline_at=deadline,
         correlation_id=correlation_id,
+        causation_id=causation_id,
         envelope_hash=canonical_hash(envelope),
         request_hash=canonical_hash(
             {

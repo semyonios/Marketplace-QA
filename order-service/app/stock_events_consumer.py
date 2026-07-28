@@ -236,18 +236,30 @@ class StockResultMessageHandler:
                 "event_type": command.event_type,
                 "order_id": str(command.order_id),
                 "reservation_request_id": str(command.reservation_request_id),
+                "reservation_id": (
+                    str(command.reservation_id) if command.reservation_id else None
+                ),
                 "supplier_id": command.supplier_id,
                 "correlation_id": str(command.correlation_id),
+                "causation_id": (
+                    str(command.causation_id) if command.causation_id else None
+                ),
                 "order_version_before": processing.version_before,
                 "order_version_after": processing.version_after,
                 "transition": (
-                    "PENDING_RESERVATION->RESERVED"
-                    if processing.result == "RESERVED"
-                    else (
-                        "PENDING_RESERVATION->REJECTED"
-                        if processing.result == "REJECTED"
-                        else "NO_STATE_CHANGE"
-                    )
+                    {
+                        "RESERVED": "PENDING_RESERVATION->RESERVED",
+                        "REJECTED": "PENDING_RESERVATION/REJECTION_PENDING->REJECTED",
+                        "CONFIRMED": "CONFIRMATION_PENDING->CONFIRMED",
+                        "CANCELLED": "CANCELLATION_PENDING->CANCELLED",
+                        "CANCELLED_WITHOUT_RESERVATION": (
+                            "CANCELLATION_PENDING->CANCELLED"
+                        ),
+                        "FAILED": "PENDING_OPERATION->FAILED",
+                        "LATE_SUCCESS_RELEASE_REQUESTED": (
+                            "CANCELLATION_PENDING->CANCELLATION_PENDING"
+                        ),
+                    }.get(processing.result, "NO_STATE_CHANGE")
                 ),
                 "result": processing.result,
                 "attempt": attempt,

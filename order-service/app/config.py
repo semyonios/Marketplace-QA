@@ -60,6 +60,7 @@ class Settings:
     customer_service_timeout_seconds: float = 1.0
     outbox_publisher_enabled: bool = True
     stock_events_consumer_enabled: bool = True
+    timeout_worker_enabled: bool = True
     outbox_poll_interval_seconds: float = 1.0
     outbox_batch_size: int = 100
     outbox_claim_lease_seconds: float = 30.0
@@ -75,6 +76,10 @@ class Settings:
     stock_events_consumer_name: str = "order-service-stock-events-v1"
     stock_events_consumer_max_attempts: int = 3
     stock_events_consumer_poll_seconds: float = 1.0
+    timeout_worker_poll_seconds: float = 1.0
+    timeout_worker_batch_size: int = 50
+    timeout_worker_retry_seconds: float = 5.0
+    timeout_worker_max_attempts: int = 5
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -106,6 +111,7 @@ class Settings:
                 "STOCK_EVENTS_CONSUMER_ENABLED",
                 True,
             ),
+            timeout_worker_enabled=_read_bool("TIMEOUT_WORKER_ENABLED", True),
             outbox_poll_interval_seconds=_read_positive_float(
                 "OUTBOX_POLL_INTERVAL_SECONDS",
                 1.0,
@@ -159,6 +165,23 @@ class Settings:
             stock_events_consumer_poll_seconds=_read_positive_float(
                 "STOCK_EVENTS_CONSUMER_POLL_SECONDS",
                 1.0,
+            ),
+            timeout_worker_poll_seconds=_read_positive_float(
+                "TIMEOUT_WORKER_POLL_SECONDS",
+                1.0,
+            ),
+            timeout_worker_batch_size=_read_bounded_positive_int(
+                "TIMEOUT_WORKER_BATCH_SIZE",
+                50,
+                100,
+            ),
+            timeout_worker_retry_seconds=_read_positive_float(
+                "TIMEOUT_WORKER_RETRY_SECONDS",
+                5.0,
+            ),
+            timeout_worker_max_attempts=_read_positive_int(
+                "TIMEOUT_WORKER_MAX_ATTEMPTS",
+                5,
             ),
         )
 

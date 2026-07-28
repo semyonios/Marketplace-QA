@@ -41,6 +41,10 @@ def main() -> None:
             topics_by_event_type={
                 "StockReservationSucceeded": settings.stock_events_topic,
                 "StockReservationFailed": settings.stock_events_topic,
+                "StockFinalized": settings.stock_events_topic,
+                "StockFinalizationFailed": settings.stock_events_topic,
+                "StockReleased": settings.stock_events_topic,
+                "StockReleaseFailed": settings.stock_events_topic,
             },
         ),
         worker_id=f"{socket.gethostname()}-{os.getpid()}",

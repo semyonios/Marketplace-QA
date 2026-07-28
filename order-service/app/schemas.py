@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -26,6 +26,43 @@ class CreateOrderRequest(BaseModel):
     customer_id: int = Field(gt=0)
     cart_version: int = Field(gt=0)
     client_request_id: uuid.UUID | None = None
+
+
+class ConfirmOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class OrderActionReasonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason_code: str
+    reason_text: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason_code")
+    @classmethod
+    def normalize_reason_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("reason_code must not be blank")
+        return normalized
+
+    @field_validator("reason_text")
+    @classmethod
+    def normalize_reason_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_other_text(self) -> "OrderActionReasonRequest":
+        if self.reason_code == "OTHER" and self.reason_text is None:
+            raise ValueError("reason_text is required for OTHER")
+        return self
+
+
+class CancelOrderRequest(OrderActionReasonRequest):
+    reason_code: str = "CUSTOMER_REQUEST"
 
 
 class CartSnapshotItem(BaseModel):
@@ -85,6 +122,7 @@ class OrderResponse(BaseModel):
     currency: str
     rejection_reason: OrderReasonResponse | None
     cancellation_reason: OrderReasonResponse | None
+    failure_reason: OrderReasonResponse | None
     created_at: datetime
     updated_at: datetime
     correlation_id: uuid.UUID

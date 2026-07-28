@@ -23,6 +23,7 @@ def test_public_order_status_enum_contains_expected_values() -> None:
     assert {status.value for status in OrderStatus} == {
         "PENDING_RESERVATION",
         "RESERVED",
+        "CONFIRMATION_PENDING",
         "CONFIRMED",
         "REJECTION_PENDING",
         "REJECTED",

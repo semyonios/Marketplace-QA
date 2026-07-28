@@ -355,6 +355,31 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+  order-timeout-worker:
+    build:
+      context: ./order-service
+    container_name: order-timeout-worker
+    hostname: order-timeout-worker
+    command: ["python", "-m", "app.timeout_worker"]
+    environment:
+      SERVICE_NAME: order-service
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://${ORDER_DB_USER:-order_app}:${ORDER_DB_PASSWORD:-order_app}@order-postgres:5432/${ORDER_DB_NAME:-order_db}
+      LOG_LEVEL: INFO
+      ALEMBIC_CONFIG: /app/alembic.ini
+      TIMEOUT_WORKER_ENABLED: "true"
+      TIMEOUT_WORKER_POLL_SECONDS: 1
+      TIMEOUT_WORKER_BATCH_SIZE: 50
+      TIMEOUT_WORKER_RETRY_SECONDS: 5
+      TIMEOUT_WORKER_MAX_ATTEMPTS: 5
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      order-migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 15s
+
   audit-consumer:
     build:
       context: ./audit-consumer

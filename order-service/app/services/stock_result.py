@@ -5,7 +5,7 @@ import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -15,10 +15,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..enums import (
     ActorType,
     BusinessStatus,
+    FailurePhase,
     InboxStatus,
     OperationState,
     OutboxStatus,
     ReservationState,
+    TargetTerminalStatus,
 )
 from ..models import (
     Order,
@@ -30,6 +32,16 @@ from ..models import (
 
 SUCCESS_EVENT = "StockReservationSucceeded"
 FAILURE_EVENT = "StockReservationFailed"
+FINALIZED_EVENT = "StockFinalized"
+FINALIZATION_FAILED_EVENT = "StockFinalizationFailed"
+RELEASED_EVENT = "StockReleased"
+RELEASE_FAILED_EVENT = "StockReleaseFailed"
+LIFECYCLE_EVENTS = {
+    FINALIZED_EVENT,
+    FINALIZATION_FAILED_EVENT,
+    RELEASED_EVENT,
+    RELEASE_FAILED_EVENT,
+}
 BUSINESS_FAILURE_REASONS = {
     "INSUFFICIENT_STOCK",
     "PRODUCT_NOT_FOUND",
@@ -75,10 +87,15 @@ class StockResultCommand:
     supplier_id: int
     correlation_id: uuid.UUID
     envelope_hash: str
+    causation_id: uuid.UUID | None = None
     reservation_id: uuid.UUID | None = None
     reserved_items: tuple[ReservedItem, ...] = ()
     reason_code: str | None = None
     failed_items: tuple[FailedItem, ...] = ()
+    finalization_request_id: uuid.UUID | None = None
+    release_request_id: uuid.UUID | None = None
+    result: str | None = None
+    retryable: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +137,7 @@ def parse_stock_result(
         )
 
     event_type = envelope["event_type"]
-    if event_type not in {SUCCESS_EVENT, FAILURE_EVENT}:
+    if event_type not in {SUCCESS_EVENT, FAILURE_EVENT, *LIFECYCLE_EVENTS}:
         raise IncompatibleStockResultError(
             "unsupported_event_type",
             "Unsupported stock result event type",
@@ -139,7 +156,7 @@ def parse_stock_result(
     event_id = _uuid(envelope["event_id"], "event_id")
     order_id = _uuid(envelope["aggregate_id"], "aggregate_id")
     correlation_id = _uuid(envelope["correlation_id"], "correlation_id")
-    _uuid(envelope["causation_id"], "causation_id")
+    causation_id = _uuid(envelope["causation_id"], "causation_id")
     occurred_at = _timestamp(envelope["occurred_at"], "occurred_at")
     if key is not None and key != str(order_id):
         raise IncompatibleStockResultError(
@@ -177,6 +194,88 @@ def parse_stock_result(
     if headers is not None:
         _validate_headers(envelope=envelope, headers=headers)
 
+    if event_type in LIFECYCLE_EVENTS:
+        reservation_id = (
+            None
+            if payload.get("reservation_id") is None
+            else _uuid(payload["reservation_id"], "reservation_id")
+        )
+        if event_type in {FINALIZED_EVENT, FINALIZATION_FAILED_EVENT}:
+            finalization_request_id = _uuid(
+                payload.get("finalization_request_id"),
+                "finalization_request_id",
+            )
+            if event_type == FINALIZED_EVENT:
+                result = payload.get("result")
+                if result not in {"FINALIZED", "ALREADY_FINALIZED"}:
+                    raise IncompatibleStockResultError(
+                        "invalid_finalization_result",
+                        "Stock finalization result is invalid",
+                    )
+                _timestamp(payload.get("finalized_at"), "finalized_at")
+                reason_code = None
+                retryable = None
+            else:
+                reason_code = _non_blank_string(
+                    payload.get("reason_code"),
+                    "reason_code",
+                )
+                retryable = _boolean(payload.get("retryable"), "retryable")
+                _timestamp(payload.get("occurred_at"), "payload.occurred_at")
+                result = None
+            return StockResultCommand(
+                event_id=event_id,
+                event_type=event_type,
+                occurred_at=occurred_at,
+                order_id=order_id,
+                reservation_request_id=reservation_request_id,
+                supplier_id=supplier_id,
+                correlation_id=correlation_id,
+                envelope_hash=canonical_hash(envelope),
+                causation_id=causation_id,
+                reservation_id=reservation_id,
+                finalization_request_id=finalization_request_id,
+                result=result,
+                reason_code=reason_code,
+                retryable=retryable,
+            )
+
+        release_request_id = _uuid(
+            payload.get("release_request_id"),
+            "release_request_id",
+        )
+        if event_type == RELEASED_EVENT:
+            result = payload.get("result")
+            if result not in {"RELEASED", "ALREADY_RELEASED", "NO_RESERVATION"}:
+                raise IncompatibleStockResultError(
+                    "invalid_release_result",
+                    "Stock release result is invalid",
+                )
+            _timestamp(payload.get("released_at"), "released_at")
+            reason_code = None
+            retryable = None
+        else:
+            reason_code = _non_blank_string(payload.get("reason_code"), "reason_code")
+            retryable = _boolean(payload.get("retryable"), "retryable")
+            _timestamp(payload.get("occurred_at"), "payload.occurred_at")
+            result = None
+        return StockResultCommand(
+            event_id=event_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            order_id=order_id,
+            reservation_request_id=reservation_request_id,
+            supplier_id=supplier_id,
+            correlation_id=correlation_id,
+            envelope_hash=canonical_hash(envelope),
+            causation_id=causation_id,
+            reservation_id=reservation_id,
+            release_request_id=release_request_id,
+            result=result,
+            reason_code=reason_code,
+            retryable=retryable,
+        )
+
     if event_type == SUCCESS_EVENT:
         reservation_id = _uuid(payload.get("reservation_id"), "reservation_id")
         _timestamp(payload.get("reserved_at"), "reserved_at")
@@ -190,6 +289,7 @@ def parse_stock_result(
             supplier_id=supplier_id,
             correlation_id=correlation_id,
             envelope_hash=canonical_hash(envelope),
+            causation_id=causation_id,
             reservation_id=reservation_id,
             reserved_items=reserved_items,
         )
@@ -216,6 +316,7 @@ def parse_stock_result(
         supplier_id=supplier_id,
         correlation_id=correlation_id,
         envelope_hash=canonical_hash(envelope),
+        causation_id=causation_id,
         reason_code=reason_code,
         failed_items=failed_items,
     )
@@ -279,6 +380,16 @@ class StockResultService:
                 command=command,
             )
 
+            special_result = self._process_late_reservation_result(
+                session=session,
+                inbox=inbox,
+                order=order,
+                command=command,
+                now=now,
+            )
+            if special_result is not None:
+                return special_result
+
             no_op_result = self._no_op_result(order=order, command=command)
             if no_op_result is not None:
                 _mark_inbox_processed(inbox, now)
@@ -287,6 +398,15 @@ class StockResultService:
                     order_id=order.id,
                     version_before=order.version,
                     version_after=order.version,
+                )
+
+            if command.event_type in LIFECYCLE_EVENTS:
+                return self._process_lifecycle_result(
+                    session=session,
+                    inbox=inbox,
+                    order=order,
+                    command=command,
+                    now=now,
                 )
 
             if not self._can_transition(order):
@@ -483,7 +603,10 @@ class StockResultService:
                 "reservation_request_mismatch",
                 "Stock result reservation request does not match order",
             )
-        if order.correlation_id != command.correlation_id:
+        if (
+            command.event_type in {SUCCESS_EVENT, FAILURE_EVENT}
+            and order.correlation_id != command.correlation_id
+        ):
             raise IncompatibleStockResultError(
                 "correlation_mismatch",
                 "Stock result correlation does not match order flow",
@@ -502,6 +625,34 @@ class StockResultService:
                 raise IncompatibleStockResultError(
                     "reserved_items_mismatch",
                     "Reserved items do not match order snapshot",
+                )
+            return
+
+        if command.event_type in LIFECYCLE_EVENTS:
+            if (
+                command.reservation_id is not None
+                and order.reservation_id is not None
+                and command.reservation_id != order.reservation_id
+            ):
+                raise IncompatibleStockResultError(
+                    "reservation_mismatch",
+                    "Stock operation reservation does not match order",
+                )
+            if (
+                command.finalization_request_id is not None
+                and command.finalization_request_id != order.finalization_request_id
+            ):
+                raise IncompatibleStockResultError(
+                    "finalization_request_mismatch",
+                    "Stock finalization request does not match order",
+                )
+            if (
+                command.release_request_id is not None
+                and command.release_request_id != order.release_request_id
+            ):
+                raise IncompatibleStockResultError(
+                    "release_request_mismatch",
+                    "Stock release request does not match order",
                 )
             return
 
@@ -531,6 +682,28 @@ class StockResultService:
         order: Order,
         command: StockResultCommand,
     ) -> str | None:
+        if command.event_type == FINALIZED_EVENT:
+            if (
+                order.business_status == BusinessStatus.CONFIRMED
+                and order.operation_state == OperationState.NONE
+            ):
+                return "DUPLICATE_LOGICAL_FINALIZATION"
+            return None
+        if command.event_type == RELEASED_EVENT:
+            if (
+                order.business_status
+                in {BusinessStatus.CANCELLED, BusinessStatus.REJECTED}
+                and order.operation_state == OperationState.NONE
+            ):
+                return "DUPLICATE_LOGICAL_RELEASE"
+            return None
+        if command.event_type in {FINALIZATION_FAILED_EVENT, RELEASE_FAILED_EVENT}:
+            if (
+                order.operation_state == OperationState.FAILED
+                and order.failure_reason_code == command.reason_code
+            ):
+                return "DUPLICATE_LOGICAL_FAILURE"
+            return None
         if command.event_type == SUCCESS_EVENT:
             if (
                 order.business_status
@@ -562,6 +735,248 @@ class StockResultService:
         } or order.business_status == BusinessStatus.CANCELLED:
             return "LATE_FAILURE_IGNORED"
         return None
+
+    def _process_late_reservation_result(
+        self,
+        *,
+        session: Session,
+        inbox: OrderInbox,
+        order: Order,
+        command: StockResultCommand,
+        now: datetime,
+    ) -> StockResultProcessingResult | None:
+        cancellation_active = (
+            order.operation_state == OperationState.CANCELLATION_PENDING
+            or order.business_status == BusinessStatus.CANCELLED
+            or (
+                order.operation_state == OperationState.FAILED
+                and order.target_terminal_status == TargetTerminalStatus.CANCELLED
+            )
+        )
+        if command.event_type not in {SUCCESS_EVENT, FAILURE_EVENT} or not cancellation_active:
+            return None
+
+        version_before = order.version
+        if command.event_type == FAILURE_EVENT:
+            if order.business_status == BusinessStatus.CANCELLED:
+                _mark_inbox_processed(inbox, now)
+                return StockResultProcessingResult(
+                    result="LATE_FAILURE_IGNORED",
+                    order_id=order.id,
+                    version_before=order.version,
+                    version_after=order.version,
+                )
+            business_before = order.business_status
+            operation_before = order.operation_state
+            reservation_before = order.reservation_state
+            order.business_status = BusinessStatus.CANCELLED
+            order.operation_state = OperationState.NONE
+            order.reservation_state = ReservationState.RELEASED
+            order.target_terminal_status = None
+            order.failure_phase = None
+            order.failure_reason_code = None
+            order.failure_reason_text = None
+            order.version += 1
+            order.updated_at = now
+            history = build_result_history(
+                order=order,
+                command=command,
+                business_status_before=business_before,
+                operation_state_before=operation_before,
+                reservation_state_before=reservation_before,
+                version_before=version_before,
+                occurred_at=now,
+            )
+            resulting_event_id = self._event_id_factory()
+            outbox = build_order_lifecycle_outbox(
+                order=order,
+                command=command,
+                event_id=resulting_event_id,
+                event_type="OrderCancelled",
+                occurred_at=now,
+            )
+            session.add_all([history, outbox])
+            _mark_inbox_processed(inbox, now)
+            return StockResultProcessingResult(
+                result="CANCELLED_WITHOUT_RESERVATION",
+                order_id=order.id,
+                version_before=version_before,
+                version_after=order.version,
+                resulting_event_id=resulting_event_id,
+            )
+
+        if order.reservation_id == command.reservation_id:
+            _mark_inbox_processed(inbox, now)
+            return StockResultProcessingResult(
+                result="DUPLICATE_LATE_SUCCESS",
+                order_id=order.id,
+                version_before=order.version,
+                version_after=order.version,
+            )
+        business_before = order.business_status
+        operation_before = order.operation_state
+        reservation_before = order.reservation_state
+        order.reservation_id = command.reservation_id
+        if order.release_request_id is None:
+            order.release_request_id = uuid.uuid4()
+        if order.release_requested_at is None:
+            order.release_requested_at = now
+            order.release_deadline_at = now + timedelta(seconds=30)
+            order.release_attempt_count = 1
+        else:
+            order.release_attempt_count += 1
+        order.release_last_attempt_at = now
+        order.version += 1
+        order.updated_at = now
+        history = build_result_history(
+            order=order,
+            command=command,
+            business_status_before=business_before,
+            operation_state_before=operation_before,
+            reservation_state_before=reservation_before,
+            version_before=version_before,
+            occurred_at=now,
+        )
+        resulting_event_id = self._event_id_factory()
+        release = build_compensation_release_outbox(
+            order=order,
+            command=command,
+            event_id=resulting_event_id,
+            occurred_at=now,
+        )
+        session.add_all([history, release])
+        _mark_inbox_processed(inbox, now)
+        return StockResultProcessingResult(
+            result="LATE_SUCCESS_RELEASE_REQUESTED",
+            order_id=order.id,
+            version_before=version_before,
+            version_after=order.version,
+            resulting_event_id=resulting_event_id,
+        )
+
+    def _process_lifecycle_result(
+        self,
+        *,
+        session: Session,
+        inbox: OrderInbox,
+        order: Order,
+        command: StockResultCommand,
+        now: datetime,
+    ) -> StockResultProcessingResult:
+        if command.event_type in {FINALIZED_EVENT, FINALIZATION_FAILED_EVENT}:
+            expected_operation = (
+                OperationState.FAILED
+                if (
+                    order.operation_state == OperationState.FAILED
+                    and order.failure_phase == FailurePhase.CONFIRMATION
+                )
+                else OperationState.CONFIRMATION_PENDING
+            )
+        else:
+            expected_operation = (
+                OperationState.FAILED
+                if (
+                    order.operation_state == OperationState.FAILED
+                    and order.failure_phase == FailurePhase.RELEASE
+                    and order.target_terminal_status is not None
+                )
+                else {
+                    TargetTerminalStatus.CANCELLED: OperationState.CANCELLATION_PENDING,
+                    TargetTerminalStatus.REJECTED: OperationState.REJECTION_PENDING,
+                }.get(order.target_terminal_status)
+            )
+        if order.operation_state != expected_operation:
+            raise IncompatibleStockResultError(
+                "conflicting_order_state",
+                "Stock operation result conflicts with current order state",
+            )
+
+        if (
+            command.event_type == RELEASE_FAILED_EVENT
+            and command.retryable is True
+        ):
+            _mark_inbox_processed(inbox, now)
+            return StockResultProcessingResult(
+                result="RETRY_PENDING",
+                order_id=order.id,
+                version_before=order.version,
+                version_after=order.version,
+            )
+
+        version_before = order.version
+        business_before = order.business_status
+        operation_before = order.operation_state
+        reservation_before = order.reservation_state
+        if command.event_type == FINALIZED_EVENT:
+            order.business_status = BusinessStatus.CONFIRMED
+            order.operation_state = OperationState.NONE
+            order.target_terminal_status = None
+            event_type = "OrderConfirmed"
+            result = "CONFIRMED"
+        elif command.event_type == RELEASED_EVENT:
+            target = order.target_terminal_status
+            if target == TargetTerminalStatus.CANCELLED:
+                order.business_status = BusinessStatus.CANCELLED
+                event_type = "OrderCancelled"
+                result = "CANCELLED"
+            elif target == TargetTerminalStatus.REJECTED:
+                order.business_status = BusinessStatus.REJECTED
+                event_type = "OrderRejected"
+                result = "REJECTED"
+            else:
+                raise IncompatibleStockResultError(
+                    "terminal_target_missing",
+                    "Release result has no terminal target",
+                )
+            order.operation_state = OperationState.NONE
+            order.reservation_state = ReservationState.RELEASED
+            order.target_terminal_status = None
+        else:
+            order.operation_state = OperationState.FAILED
+            order.failure_phase = (
+                FailurePhase.CONFIRMATION
+                if command.event_type == FINALIZATION_FAILED_EVENT
+                else FailurePhase.RELEASE
+            )
+            order.failure_reason_code = command.reason_code
+            order.failure_reason_text = None
+            if command.event_type == RELEASE_FAILED_EVENT:
+                order.reservation_state = ReservationState.UNKNOWN
+            event_type = "OrderProcessingFailed"
+            result = "FAILED"
+
+        if command.event_type in {FINALIZED_EVENT, RELEASED_EVENT}:
+            order.failure_phase = None
+            order.failure_reason_code = None
+            order.failure_reason_text = None
+        order.version += 1
+        order.updated_at = now
+        history = build_result_history(
+            order=order,
+            command=command,
+            business_status_before=business_before,
+            operation_state_before=operation_before,
+            reservation_state_before=reservation_before,
+            version_before=version_before,
+            occurred_at=now,
+        )
+        resulting_event_id = self._event_id_factory()
+        outbox = build_order_lifecycle_outbox(
+            order=order,
+            command=command,
+            event_id=resulting_event_id,
+            event_type=event_type,
+            occurred_at=now,
+        )
+        session.add_all([history, outbox])
+        _mark_inbox_processed(inbox, now)
+        return StockResultProcessingResult(
+            result=result,
+            order_id=order.id,
+            version_before=version_before,
+            version_after=order.version,
+            resulting_event_id=resulting_event_id,
+        )
 
 
 def build_result_history(
@@ -652,6 +1067,131 @@ def build_result_outbox(
         aggregate_type="ORDER",
         aggregate_id=order.id,
         event_type=event_type,
+        event_version=1,
+        payload=envelope,
+        headers=headers,
+        status=OutboxStatus.PENDING,
+        attempt_count=0,
+        next_attempt_at=occurred_at,
+        created_at=occurred_at,
+    )
+
+
+def build_order_lifecycle_outbox(
+    *,
+    order: Order,
+    command: StockResultCommand,
+    event_id: uuid.UUID,
+    event_type: str,
+    occurred_at: datetime,
+) -> OrderOutbox:
+    business_payload: dict[str, Any] = {
+        "order_id": str(order.id),
+        "customer_id": order.customer_id,
+        "supplier_id": order.supplier_id,
+        "status": order.status.value,
+        "business_status": order.business_status.value,
+        "operation_state": order.operation_state.value,
+        "reservation_state": order.reservation_state.value,
+        "order_version": order.version,
+        "reservation_request_id": str(order.reservation_request_id),
+        "reservation_id": str(order.reservation_id) if order.reservation_id else None,
+    }
+    if order.rejection_reason_code:
+        business_payload.update(
+            reason_code=order.rejection_reason_code,
+            reason_text=order.rejection_reason_text,
+        )
+    elif order.cancellation_reason_code:
+        business_payload.update(
+            reason_code=order.cancellation_reason_code,
+            reason_text=order.cancellation_reason_text,
+        )
+    elif order.failure_reason_code:
+        business_payload.update(
+            failure_phase=order.failure_phase.value if order.failure_phase else None,
+            reason_code=order.failure_reason_code,
+            reason_text=order.failure_reason_text,
+        )
+    envelope = {
+        "event_id": str(event_id),
+        "event_type": event_type,
+        "event_version": 1,
+        "occurred_at": _timestamp_string(occurred_at),
+        "producer": "order-service",
+        "aggregate_type": "ORDER",
+        "aggregate_id": str(order.id),
+        "correlation_id": str(command.correlation_id),
+        "causation_id": str(command.event_id),
+        "payload": business_payload,
+    }
+    headers = {
+        "event_id": str(event_id),
+        "event_type": event_type,
+        "event_version": "1",
+        "correlation_id": str(command.correlation_id),
+        "causation_id": str(command.event_id),
+        "producer": "order-service",
+        "content_type": "application/json",
+    }
+    return OrderOutbox(
+        id=event_id,
+        aggregate_type="ORDER",
+        aggregate_id=order.id,
+        event_type=event_type,
+        event_version=1,
+        payload=envelope,
+        headers=headers,
+        status=OutboxStatus.PENDING,
+        attempt_count=0,
+        next_attempt_at=occurred_at,
+        created_at=occurred_at,
+    )
+
+
+def build_compensation_release_outbox(
+    *,
+    order: Order,
+    command: StockResultCommand,
+    event_id: uuid.UUID,
+    occurred_at: datetime,
+) -> OrderOutbox:
+    business_payload = {
+        "order_id": str(order.id),
+        "supplier_id": order.supplier_id,
+        "release_request_id": str(order.release_request_id),
+        "reservation_id": str(command.reservation_id),
+        "reservation_request_id": str(order.reservation_request_id),
+        "reason": "COMPENSATION",
+        "requested_at": _timestamp_string(occurred_at),
+        "correlation_id": str(command.correlation_id),
+    }
+    envelope = {
+        "event_id": str(event_id),
+        "event_type": "StockReleaseRequested",
+        "event_version": 1,
+        "occurred_at": _timestamp_string(occurred_at),
+        "producer": "order-service",
+        "aggregate_type": "ORDER",
+        "aggregate_id": str(order.id),
+        "correlation_id": str(command.correlation_id),
+        "causation_id": str(command.event_id),
+        "payload": business_payload,
+    }
+    headers = {
+        "event_id": str(event_id),
+        "event_type": "StockReleaseRequested",
+        "event_version": "1",
+        "correlation_id": str(command.correlation_id),
+        "causation_id": str(command.event_id),
+        "producer": "order-service",
+        "content_type": "application/json",
+    }
+    return OrderOutbox(
+        id=event_id,
+        aggregate_type="ORDER",
+        aggregate_id=order.id,
+        event_type="StockReleaseRequested",
         event_version=1,
         payload=envelope,
         headers=headers,
@@ -811,6 +1351,24 @@ def _non_negative_int(value: Any, field: str) -> int:
             f"{field} must be non-negative",
         )
     return parsed
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise IncompatibleStockResultError(
+            "invalid_boolean",
+            f"{field} must be a boolean",
+        )
+    return value
+
+
+def _non_blank_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise IncompatibleStockResultError(
+            "invalid_string",
+            f"{field} must be a non-blank string",
+        )
+    return value.strip()
 
 
 def _timestamp(value: Any, field: str) -> datetime:

@@ -62,6 +62,7 @@ class Order(Base):
         CheckConstraint("currency = 'RUB'", name="orders_currency_rub"),
         CheckConstraint("version >= 1", name="orders_version_positive"),
         CheckConstraint("reservation_attempt_count >= 0", name="orders_reservation_attempt_count_non_negative"),
+        CheckConstraint("finalization_attempt_count >= 0", name="orders_finalization_attempt_count_non_negative"),
         CheckConstraint("release_attempt_count >= 0", name="orders_release_attempt_count_non_negative"),
         CheckConstraint(
             "(operation_state <> 'NONE') OR target_terminal_status IS NULL",
@@ -84,6 +85,18 @@ class Order(Base):
         CheckConstraint(
             "business_status <> 'CONFIRMED' OR (operation_state = 'NONE' AND reservation_state = 'RESERVED')",
             name="orders_confirmed_state",
+        ),
+        CheckConstraint(
+            """
+            operation_state <> 'CONFIRMATION_PENDING'
+            OR (
+                business_status = 'RESERVED'
+                AND reservation_state = 'RESERVED'
+                AND finalization_request_id IS NOT NULL
+                AND target_terminal_status IS NULL
+            )
+            """,
+            name="orders_pending_confirmation",
         ),
         CheckConstraint(
             "business_status <> 'CANCELLED' OR (operation_state = 'NONE' AND reservation_state = 'RELEASED')",
@@ -122,6 +135,17 @@ class Order(Base):
             """,
             name="orders_release_deadline_pair",
         ),
+        CheckConstraint(
+            """
+            (finalization_requested_at IS NULL AND finalization_deadline_at IS NULL)
+            OR (
+                finalization_requested_at IS NOT NULL
+                AND finalization_deadline_at > finalization_requested_at
+                AND finalization_attempt_count >= 1
+            )
+            """,
+            name="orders_finalization_deadline_pair",
+        ),
         Index("ix_orders_customer_created_id", "customer_id", text("created_at DESC"), text("id DESC")),
         Index("ix_orders_supplier_created_id", "supplier_id", text("created_at DESC"), text("id DESC")),
         Index(
@@ -146,10 +170,24 @@ class Order(Base):
             ),
         ),
         Index(
+            "ix_orders_finalization_deadline_pending",
+            "finalization_deadline_at",
+            postgresql_where=text(
+                "operation_state = 'CONFIRMATION_PENDING'"
+                " AND finalization_deadline_at IS NOT NULL"
+            ),
+        ),
+        Index(
             "uq_orders_release_request_id",
             "release_request_id",
             unique=True,
             postgresql_where=text("release_request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_orders_finalization_request_id",
+            "finalization_request_id",
+            unique=True,
+            postgresql_where=text("finalization_request_id IS NOT NULL"),
         ),
     )
 
@@ -187,6 +225,7 @@ class Order(Base):
     client_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     reservation_request_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     reservation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    finalization_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     release_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     reservation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reservation_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -197,6 +236,18 @@ class Order(Base):
         server_default="0",
     )
     reservation_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalization_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    finalization_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     release_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     release_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     release_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

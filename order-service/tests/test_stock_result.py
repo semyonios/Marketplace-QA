@@ -597,18 +597,23 @@ def test_late_success_never_returns_cancelled_order_to_reserved(
     command = _command(seeded)
     result = _service(stock_result_session_factory).process(command)
 
-    assert result.result == "LATE_SUCCESS_DEFERRED"
+    assert result.result == "LATE_SUCCESS_RELEASE_REQUESTED"
     with stock_result_session_factory() as session:
         order = session.get(Order, seeded.order_id)
         assert order.business_status == BusinessStatus.CANCELLED
         assert order.reservation_state == ReservationState.RELEASED
-        assert order.version == 1
+        assert order.version == 2
+        assert order.reservation_id == command.reservation_id
+        assert order.release_request_id is not None
         assert session.scalar(
             select(func.count()).select_from(OrderStatusHistory)
-        ) == 1
+        ) == 2
         assert session.scalar(
             select(func.count()).select_from(OrderOutbox)
-        ) == 0
+        ) == 1
+        compensation = session.scalar(select(OrderOutbox))
+        assert compensation.event_type == "StockReleaseRequested"
+        assert compensation.payload["payload"]["reason"] == "COMPENSATION"
         assert session.get(
             OrderInbox,
             (command.event_id, CONSUMER_NAME),

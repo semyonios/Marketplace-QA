@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -127,21 +128,35 @@ class StockReservation(Base):
         UniqueConstraint("order_id", name="uq_stock_reservations_order"),
         CheckConstraint("supplier_id > 0", name="stock_reservations_supplier_positive"),
         CheckConstraint(
-            "status IN ('RESERVED','REJECTED')",
+            "status IN ('RESERVED','REJECTED','FINALIZED','RELEASED')",
             name="stock_reservations_status",
         ),
         CheckConstraint(
             """
-            (status = 'RESERVED' AND failure_reason IS NULL)
-            OR (status = 'REJECTED' AND failure_reason IS NOT NULL)
+            (status = 'REJECTED' AND failure_reason IS NOT NULL)
+            OR (status <> 'REJECTED' AND failure_reason IS NULL)
             """,
             name="stock_reservations_failure_by_status",
+        ),
+        Index(
+            "uq_stock_reservations_finalization_request",
+            "finalization_request_id",
+            unique=True,
+            postgresql_where=text("finalization_request_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_stock_reservations_release_request",
+            "release_request_id",
+            unique=True,
+            postgresql_where=text("release_request_id IS NOT NULL"),
         ),
         Index("ix_stock_reservations_supplier_created", "supplier_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     reservation_request_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finalization_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    release_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     supplier_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -160,6 +175,8 @@ class StockReservation(Base):
         onupdate=func.now(),
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class StockReservationItem(Base):

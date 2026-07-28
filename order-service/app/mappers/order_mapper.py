@@ -69,6 +69,11 @@ def map_order_to_response(order: Order, *, actor_role: str) -> OrderResponse:
             if order.cancellation_reason_code
             else None
         ),
+        failure_reason=(
+            OrderReasonResponse(code=order.failure_reason_code, text=order.failure_reason_text)
+            if order.failure_reason_code
+            else None
+        ),
         created_at=order.created_at,
         updated_at=order.updated_at,
         correlation_id=order.correlation_id,

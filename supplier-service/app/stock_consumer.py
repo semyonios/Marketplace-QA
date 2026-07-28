@@ -24,6 +24,12 @@ from .services.reservation import (
     ReservationService,
     parse_reservation_command,
 )
+from .services.stock_lifecycle import (
+    StockLifecycleCommand,
+    StockLifecycleResult,
+    StockLifecycleService,
+    parse_stock_lifecycle_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +68,14 @@ class ReservationMessageHandler:
         self,
         *,
         reservation_service: ReservationService,
+        lifecycle_service: StockLifecycleService | None = None,
         dlq_producer: JsonMessageProducer,
         settings: Settings,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._reservation_service = reservation_service
+        self._lifecycle_service = lifecycle_service
         self._dlq_producer = dlq_producer
         self._settings = settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -76,7 +84,7 @@ class ReservationMessageHandler:
     def handle(self, message: IncomingKafkaMessage) -> MessageHandlingResult:
         first_failed_at: datetime | None = None
         last_exception: Exception | None = None
-        command: ReservationCommand | None = None
+        command: ReservationCommand | StockLifecycleCommand | None = None
         envelope: Mapping[str, Any] | None = None
         category = "TECHNICAL_FAILURE"
         code = "processing_failed"
@@ -85,8 +93,20 @@ class ReservationMessageHandler:
             started_at = time.monotonic()
             try:
                 envelope = _decode_envelope(message.value)
-                command = parse_reservation_command(envelope, headers=message.headers)
-                processing = self._reservation_service.process(command)
+                if envelope.get("event_type") == "StockReservationRequested":
+                    command = parse_reservation_command(envelope, headers=message.headers)
+                    processing = self._reservation_service.process(command)
+                else:
+                    if self._lifecycle_service is None:
+                        raise IncompatibleMessageError(
+                            "unsupported_event_type",
+                            "Unsupported stock command event type",
+                        )
+                    command = parse_stock_lifecycle_command(
+                        envelope,
+                        headers=message.headers,
+                    )
+                    processing = self._lifecycle_service.process(command)
                 self._log_result(
                     command=command,
                     processing=processing,
@@ -108,7 +128,13 @@ class ReservationMessageHandler:
                 last_exception = exc
                 if command is not None:
                     try:
-                        self._reservation_service.record_retryable_failure(
+                        service = (
+                            self._reservation_service
+                            if isinstance(command, ReservationCommand)
+                            else self._lifecycle_service
+                        )
+                        assert service is not None
+                        service.record_retryable_failure(
                             command=command,
                             safe_error="Reservation processing failed",
                             attempt=attempt,
@@ -136,9 +162,20 @@ class ReservationMessageHandler:
                     "reservation_request_id": (
                         str(command.reservation_request_id) if command else None
                     ),
+                    "reservation_id": (
+                        str(command.reservation_id)
+                        if isinstance(command, StockLifecycleCommand)
+                        and command.reservation_id
+                        else None
+                    ),
                     "supplier_id": command.supplier_id if command else None,
                     "correlation_id": (
                         str(command.correlation_id) if command else _correlation_id(envelope)
+                    ),
+                    "causation_id": (
+                        str(command.causation_id)
+                        if command and command.causation_id
+                        else None
                     ),
                     "attempt": attempt,
                     "result": "retry_scheduled" if attempt < self._settings.consumer_max_attempts else "dlq",
@@ -177,7 +214,13 @@ class ReservationMessageHandler:
             },
         )
         if command is not None:
-            self._reservation_service.mark_dlq(
+            service = (
+                self._reservation_service
+                if isinstance(command, ReservationCommand)
+                else self._lifecycle_service
+            )
+            assert service is not None
+            service.mark_dlq(
                 command=command,
                 safe_error="Reservation command moved to DLQ",
                 attempt=self._settings.consumer_max_attempts,
@@ -208,21 +251,39 @@ class ReservationMessageHandler:
     def _log_result(
         self,
         *,
-        command: ReservationCommand,
-        processing: ReservationProcessingResult,
+        command: ReservationCommand | StockLifecycleCommand,
+        processing: ReservationProcessingResult | StockLifecycleResult,
         attempt: int,
         duration_ms: float,
     ) -> None:
         logger.info(
-            "reservation command processed",
+            "stock command processed",
             extra={
                 "consumer": self._settings.reservation_consumer_name,
                 "event_id": str(command.event_id),
-                "event_type": "StockReservationRequested",
+                "event_type": (
+                    "StockReservationRequested"
+                    if isinstance(command, ReservationCommand)
+                    else command.event_type
+                ),
                 "order_id": str(command.order_id),
                 "reservation_request_id": str(command.reservation_request_id),
                 "supplier_id": command.supplier_id,
                 "correlation_id": str(command.correlation_id),
+                "causation_id": (
+                    str(command.causation_id) if command.causation_id else None
+                ),
+                "reservation_id": (
+                    str(command.reservation_id)
+                    if isinstance(command, StockLifecycleCommand)
+                    and command.reservation_id
+                    else None
+                ),
+                "action": (
+                    command.event_type
+                    if isinstance(command, StockLifecycleCommand)
+                    else "StockReservationRequested"
+                ),
                 "attempt": attempt,
                 "result": processing.result,
                 "rejection_reason": processing.reason_code,
@@ -324,8 +385,13 @@ def main() -> None:
         session_factory=SessionLocal,
         consumer_name=settings.reservation_consumer_name,
     )
+    lifecycle_service = StockLifecycleService(
+        session_factory=SessionLocal,
+        consumer_name=settings.reservation_consumer_name,
+    )
     handler = ReservationMessageHandler(
         reservation_service=service,
+        lifecycle_service=lifecycle_service,
         dlq_producer=dlq_producer,
         settings=settings,
     )
