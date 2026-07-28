@@ -1,6 +1,6 @@
 # order-service
 
-`order-service` — TO BE source of truth по жизненному циклу заказов Marketplace-QA 2.0. На текущем этапе реализованы инфраструктурный каркас, отдельная PostgreSQL database, Alembic migrations, ORM metadata и operational endpoints. Business order API и Kafka processing пока не реализованы.
+`order-service` — TO BE source of truth по жизненному циклу заказов Marketplace-QA 2.0. Реализованы инфраструктурный каркас, отдельная PostgreSQL database, Alembic migrations, operational endpoints и идемпотентный `CreateOrder` с server-side cart snapshot и transactional outbox. Kafka publisher/consumer и reservation processing пока не реализованы.
 
 ## Переменные окружения
 
@@ -13,7 +13,8 @@
 | `DATABASE_URL` | `postgresql+psycopg://order_app:order_app@localhost:5434/order_db` | order-db connection URL |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | заготовка для следующего этапа |
-| `CUSTOMER_SERVICE_URL` | `http://localhost:8001` | заготовка для будущего cart snapshot API |
+| `CUSTOMER_SERVICE_URL` | `http://localhost:8001` | base URL внутреннего cart snapshot API |
+| `CUSTOMER_SERVICE_TIMEOUT_SECONDS` | `1` | timeout одной попытки cart snapshot |
 | `READINESS_TIMEOUT_SECONDS` | `2` | DB connect timeout readiness |
 | `ALEMBIC_CONFIG` | `<service>/alembic.ini` | путь к Alembic config |
 
@@ -31,6 +32,21 @@ Compose сначала ждёт healthy `order-postgres`, затем выпол�
 
 - health: <http://localhost:8002/health>
 - readiness: <http://localhost:8002/ready>
+
+## Создание заказа
+
+`POST /api/v1/orders` требует `X-Test-Role: CUSTOMER`, положительный `X-Test-Subject-ID`, совпадающий с `customer_id`, и `Idempotency-Key`. Optional `X-Correlation-ID` принимается только как UUID; отсутствующее или некорректное значение заменяется новым UUID.
+
+```bash
+curl -i http://localhost:8002/api/v1/orders \
+  -H 'Content-Type: application/json' \
+  -H 'X-Test-Role: CUSTOMER' \
+  -H 'X-Test-Subject-ID: 1' \
+  -H 'Idempotency-Key: checkout-customer-1-cart-1' \
+  -d '{"customer_id":1,"cart_version":1}'
+```
+
+Первый успешный запрос возвращает `202`, replay того же key/body — `200`, тот же key с другим semantic body — `409`. В одной финальной транзакции создаются Order, Items, начальная History, completed idempotency result и outbox templates `OrderCreated`/`StockReservationRequested`.
 
 ## Локальный запуск
 

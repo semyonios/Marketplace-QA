@@ -4,7 +4,8 @@ import os
 import threading
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from confluent_kafka import Consumer
 from sqlalchemy.dialects.postgresql import insert
@@ -47,11 +48,14 @@ def _parse_created_at(value: str | None) -> datetime | None:
 def upsert_product(db: Session, payload: dict) -> bool:
     existing = db.get(Product, payload["id"])
     created_at = _parse_created_at(payload.get("created_at"))
+    price = Decimal(str(payload["price"])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    updated_at = datetime.now(timezone.utc)
 
     if existing and (
-        existing.name == payload["name"]
+        existing.supplier_id == payload.get("supplier_id")
+        and existing.name == payload["name"]
         and existing.description == payload.get("description")
-        and existing.price == payload["price"]
+        and existing.price == price
         and existing.stocks == payload["stocks"]
         and existing.is_active == payload.get("is_active", True)
         and existing.is_archived == payload.get("is_archived", False)
@@ -61,13 +65,15 @@ def upsert_product(db: Session, payload: dict) -> bool:
 
     values = {
         "id": payload["id"],
+        "supplier_id": payload.get("supplier_id"),
         "name": payload["name"],
         "description": payload.get("description"),
-        "price": payload["price"],
+        "price": price,
         "stocks": payload["stocks"],
         "is_active": payload.get("is_active", True),
         "is_archived": payload.get("is_archived", False),
         "created_at": created_at,
+        "updated_at": updated_at,
     }
     stmt = insert(Product).values(**values)
     db.execute(
@@ -75,12 +81,14 @@ def upsert_product(db: Session, payload: dict) -> bool:
             index_elements=[Product.id],
             set_={
                 "name": stmt.excluded.name,
+                "supplier_id": stmt.excluded.supplier_id,
                 "description": stmt.excluded.description,
                 "price": stmt.excluded.price,
                 "stocks": stmt.excluded.stocks,
                 "is_active": stmt.excluded.is_active,
                 "is_archived": stmt.excluded.is_archived,
                 "created_at": stmt.excluded.created_at,
+                "updated_at": stmt.excluded.updated_at,
             },
         )
     )
@@ -96,6 +104,7 @@ def upsert_product_stocks(db: Session, product_id: int, total_quantity: int) -> 
     if product.stocks == total_quantity:
         return False
     product.stocks = total_quantity
+    product.updated_at = datetime.now(timezone.utc)
     db.commit()
     return True
 

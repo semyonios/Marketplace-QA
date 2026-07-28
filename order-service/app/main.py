@@ -8,7 +8,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request
 
+from .api.order_router import create_order_router
 from .api.router import create_router
+from .clients.customer_service import CustomerServiceClient
 from .config import Settings, get_settings
 from .database import check_readiness, engine
 from .errors import register_exception_handlers
@@ -17,7 +19,11 @@ from .logging_config import configure_logging, reset_correlation_id, set_correla
 logger = logging.getLogger(__name__)
 
 
-def create_app(application_settings: Settings | None = None) -> FastAPI:
+def create_app(
+    application_settings: Settings | None = None,
+    *,
+    cart_snapshot_client: CustomerServiceClient | None = None,
+) -> FastAPI:
     settings = application_settings or get_settings()
     configure_logging(settings)
 
@@ -27,6 +33,9 @@ def create_app(application_settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            close_client = getattr(_app.state.cart_snapshot_client, "close", None)
+            if callable(close_client):
+                close_client()
             engine.dispose()
             logger.info("application shutdown")
 
@@ -37,6 +46,10 @@ def create_app(application_settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.readiness_checker = check_readiness
+    application.state.cart_snapshot_client = cart_snapshot_client or CustomerServiceClient(
+        base_url=settings.customer_service_url,
+        timeout_seconds=settings.customer_service_timeout_seconds,
+    )
 
     @application.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):
@@ -56,6 +69,7 @@ def create_app(application_settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(application)
     application.include_router(create_router(settings=settings, readiness_checker=check_readiness))
+    application.include_router(create_order_router())
     return application
 
 

@@ -24,6 +24,7 @@ class ServiceError(Exception):
         details: dict[str, Any] | None = None,
         field_errors: list[dict[str, str]] | None = None,
         retryable: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -33,6 +34,7 @@ class ServiceError(Exception):
         self.details = details or {}
         self.field_errors = field_errors or []
         self.retryable = retryable
+        self.headers = headers or {}
 
 
 def _timestamp() -> str:
@@ -42,6 +44,7 @@ def _timestamp() -> str:
 def _error_response(error: ServiceError) -> JSONResponse:
     return JSONResponse(
         status_code=error.status_code,
+        headers=error.headers,
         content={
             "error": {
                 "code": error.code,
@@ -59,11 +62,22 @@ def _error_response(error: ServiceError) -> JSONResponse:
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ServiceError)
-    async def service_error_handler(_request: Request, exc: ServiceError) -> JSONResponse:
+    async def service_error_handler(request: Request, exc: ServiceError) -> JSONResponse:
+        logger.warning(
+            "controlled request error method=%s path=%s error_code=%s retryable=%s",
+            request.method,
+            request.url.path,
+            exc.code,
+            exc.retryable,
+        )
         return _error_response(exc)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        customer_id_error = any(
+            "customer_id" in error["loc"]
+            for error in exc.errors()
+        )
         field_errors = [
             {
                 "field": ".".join(str(part) for part in error["loc"] if part != "body"),
@@ -73,9 +87,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         ]
         return _error_response(
             ServiceError(
-                code="invalid_request",
+                code="invalid_customer_id" if customer_id_error else "invalid_request",
                 category="VALIDATION",
-                message="Request validation failed",
+                message="Customer identifier must be positive" if customer_id_error else "Request validation failed",
                 status_code=400,
                 field_errors=field_errors,
             )

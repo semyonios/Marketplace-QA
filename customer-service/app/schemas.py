@@ -1,4 +1,6 @@
+import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -90,6 +92,27 @@ class CartRead(BaseModel):
     count: int
     total_items_count: int
     total_price: float
+
+
+class CartSnapshotItem(BaseModel):
+    product_id: int
+    product_name: str
+    supplier_id: int
+    quantity: int
+    unit_price: Decimal
+    currency: str
+    product_status: str
+    projected_available_quantity: int
+    projection_updated_at: datetime
+
+
+class CartSnapshotRead(BaseModel):
+    customer_id: int
+    cart_id: uuid.UUID
+    cart_version: int
+    supplier_id: int | None
+    items: list[CartSnapshotItem]
+    generated_at: datetime
 
 
 class OrderCreateItem(BaseModel):

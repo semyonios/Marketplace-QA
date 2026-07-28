@@ -41,6 +41,7 @@ class Settings:
     customer_service_url: str
     readiness_timeout_seconds: float
     alembic_config: str
+    customer_service_timeout_seconds: float = 1.0
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -63,6 +64,10 @@ class Settings:
             customer_service_url=os.getenv("CUSTOMER_SERVICE_URL", "http://localhost:8001"),
             readiness_timeout_seconds=_read_positive_float("READINESS_TIMEOUT_SECONDS", 2.0),
             alembic_config=os.getenv("ALEMBIC_CONFIG", str(project_root / "alembic.ini")),
+            customer_service_timeout_seconds=_read_positive_float(
+                "CUSTOMER_SERVICE_TIMEOUT_SECONDS",
+                1.0,
+            ),
         )
 
 
