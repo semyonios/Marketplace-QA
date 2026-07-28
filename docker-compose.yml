@@ -35,6 +35,24 @@ services:
       timeout: 5s
       retries: 10
 
+  order-postgres:
+    image: postgres:16-alpine
+    container_name: order-postgres
+    hostname: order-postgres
+    environment:
+      POSTGRES_DB: ${ORDER_DB_NAME:-order_db}
+      POSTGRES_USER: ${ORDER_DB_USER:-order_app}
+      POSTGRES_PASSWORD: ${ORDER_DB_PASSWORD:-order_app}
+    ports:
+      - "${ORDER_DB_PORT:-5434}:5432"
+    volumes:
+      - order_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   kafka-broker:
     image: apache/kafka:4.2.0
     container_name: kafka-broker
@@ -113,6 +131,54 @@ services:
       supplier-service:
         condition: service_started
 
+  order-migrations:
+    build:
+      context: ./order-service
+    container_name: order-migrations
+    environment:
+      DATABASE_URL: postgresql+psycopg://${ORDER_DB_USER:-order_app}:${ORDER_DB_PASSWORD:-order_app}@order-postgres:5432/${ORDER_DB_NAME:-order_db}
+      ALEMBIC_CONFIG: /app/alembic.ini
+    command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  order-service:
+    build:
+      context: ./order-service
+    container_name: order-service
+    hostname: order-service
+    environment:
+      SERVICE_NAME: order-service
+      ENVIRONMENT: development
+      HOST: 0.0.0.0
+      PORT: 8000
+      DATABASE_URL: postgresql+psycopg://${ORDER_DB_USER:-order_app}:${ORDER_DB_PASSWORD:-order_app}@order-postgres:5432/${ORDER_DB_NAME:-order_db}
+      LOG_LEVEL: INFO
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      CUSTOMER_SERVICE_URL: http://customer-service:8001
+      READINESS_TIMEOUT_SECONDS: 2
+      ALEMBIC_CONFIG: /app/alembic.ini
+    ports:
+      - "${ORDER_SERVICE_PORT:-8002}:8000"
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      order-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   audit-consumer:
     build:
       context: ./audit-consumer
@@ -132,3 +198,4 @@ services:
 volumes:
   postgres_data:
   customer_postgres_data:
+  order_postgres_data:
