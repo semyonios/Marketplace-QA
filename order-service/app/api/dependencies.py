@@ -25,9 +25,25 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def get_test_actor(
-    x_test_role: str | None = Header(default=None, alias="X-Test-Role"),
-    x_test_subject_id: str | None = Header(default=None, alias="X-Test-Subject-ID"),
+    x_test_role: str | None = Header(
+        default=None,
+        alias="X-Test-Role",
+        description="Тестовая роль: CUSTOMER или SUPPLIER. Не является production-аутентификацией.",
+        examples=["CUSTOMER"],
+    ),
+    x_test_subject_id: str | None = Header(
+        default=None,
+        alias="X-Test-Subject-ID",
+        description="Положительный ID выбранного тестового Customer/Supplier.",
+        examples=["1"],
+    ),
+    x_correlation_id: str | None = Header(
+        default=None,
+        alias="X-Correlation-ID",
+        description="Опциональный UUID для сквозной корреляции; при отсутствии генерируется сервисом.",
+    ),
 ) -> TestActor:
+    _ = x_correlation_id
     if x_test_role is None or x_test_subject_id is None:
         raise ServiceError(
             code="order_access_forbidden",

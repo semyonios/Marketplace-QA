@@ -1,4 +1,5 @@
 import { apiConfig } from "./config";
+import { createUuid } from "./id";
 import type {
   ApiResult,
   Cart,
@@ -45,7 +46,7 @@ const errorLead: Record<number, string> = {
 };
 
 function humanError(status: number, backendMessage: string): string {
-  return `${errorLead[status] ?? `Ошибка HTTP ${status}`}: ${backendMessage}`;
+  return `HTTP ${status} — ${errorLead[status] ?? "Ошибка запроса"}: ${backendMessage}`;
 }
 
 function actorHeaders(role?: Role, subjectId?: number): Record<string, string> {
@@ -53,7 +54,7 @@ function actorHeaders(role?: Role, subjectId?: number): Record<string, string> {
   return {
     "X-Test-Role": role,
     "X-Test-Subject-ID": String(subjectId),
-    "X-Correlation-ID": crypto.randomUUID(),
+    "X-Correlation-ID": createUuid(),
   };
 }
 

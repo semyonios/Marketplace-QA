@@ -4,6 +4,7 @@ import { api } from "../api";
 import { EmptyState, ErrorState, LoadingState } from "../components/AsyncState";
 import { useMarketplace } from "../context";
 import { useApiResource } from "../hooks";
+import { createUuid } from "../id";
 
 export function CheckoutPage() {
   const { customer } = useMarketplace();
@@ -18,7 +19,7 @@ export function CheckoutPage() {
     const storageKey = `marketplace-checkout-${customer!.id}-${cart.data.cart_version}`;
     const existing = sessionStorage.getItem(storageKey);
     if (existing) return existing;
-    const created = `checkout-${customer!.id}-v${cart.data.cart_version}-${crypto.randomUUID()}`;
+    const created = `checkout-${customer!.id}-v${cart.data.cart_version}-${createUuid()}`;
     sessionStorage.setItem(storageKey, created);
     return created;
   }, [cart.data, customer]);

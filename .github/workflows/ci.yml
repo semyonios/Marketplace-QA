@@ -1,0 +1,121 @@
+name: Marketplace-QA CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - "design/**"
+      - "docs/**"
+
+concurrency:
+  group: marketplace-qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Python syntax
+        run: python -m compileall -q customer-service supplier-service order-service audit-consumer scripts
+      - name: Frontend dependencies
+        working-directory: frontend
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: TypeScript check
+        working-directory: frontend
+        run: pnpm typecheck
+      - name: Playwright typecheck
+        working-directory: e2e
+        run: |
+          npm install --global pnpm@9.15.4
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+      - name: Docker Compose validation
+        run: docker compose config --quiet
+
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start test dependencies
+        run: docker compose up -d supplier-postgres customer-postgres order-postgres kafka-broker
+      - name: Build test images
+        run: docker compose --profile tools build order-tests supplier-tests customer-tests
+      - name: Order service tests
+        run: docker compose --profile tools run --rm order-tests
+      - name: Supplier service tests
+        run: docker compose --profile tools run --rm supplier-tests
+      - name: Customer service tests
+        run: docker compose --profile tools run --rm customer-tests
+      - name: Dependency logs on failure
+        if: failure()
+        run: docker compose logs --no-color supplier-postgres customer-postgres order-postgres kafka-broker
+      - name: Stop dependencies
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: frontend
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Unit tests
+        working-directory: frontend
+        run: pnpm test
+      - name: Production build
+        working-directory: frontend
+        run: pnpm build
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    needs: [static-checks, backend-tests, frontend-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start complete stack
+        run: docker compose up --build -d
+      - name: API and Kafka smoke
+        run: docker compose --profile tools run --rm smoke
+      - name: Build Playwright image
+        run: docker compose --profile tools build e2e
+      - name: Playwright scenarios
+        run: docker compose --profile tools run --rm -e CI=true e2e
+      - name: Docker logs on failure
+        if: failure()
+        run: docker compose logs --no-color > docker-compose.log
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            docker-compose.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v --remove-orphans

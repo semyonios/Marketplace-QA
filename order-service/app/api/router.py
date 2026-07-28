@@ -21,7 +21,12 @@ def create_router(
 ) -> APIRouter:
     router = APIRouter(tags=["Operational"])
 
-    @router.get("/health", response_model=HealthResponse)
+    @router.get(
+        "/health",
+        response_model=HealthResponse,
+        summary="Проверить liveness",
+        description="Проверяет, что HTTP-процесс order-service отвечает.",
+    )
     def health() -> HealthResponse:
         return HealthResponse(status="ok", service=settings.service_name)
 
@@ -29,6 +34,8 @@ def create_router(
         "/ready",
         response_model=ReadinessResponse,
         responses={503: {"model": ReadinessResponse}},
+        summary="Проверить readiness",
+        description="Проверяет PostgreSQL, Alembic revision и Kafka metadata.",
     )
     def ready(request: Request) -> ReadinessResponse | JSONResponse:
         checker: Callable[[], ReadinessState] = request.app.state.readiness_checker

@@ -21,6 +21,35 @@ from ..services.order_actions import cancel_order, confirm_order, reject_order
 from .dependencies import TestActor, get_db, require_customer_actor, require_supplier_actor
 
 ETAG_PATTERN = re.compile(r'^"([1-9][0-9]*)"$')
+ACTION_RESPONSES = {
+    200: {
+        "model": OrderResponse,
+        "description": "Идемпотентный replay уже принятого действия.",
+        "headers": {
+            "ETag": {
+                "description": "Текущая версия заказа",
+                "schema": {"type": "string"},
+            },
+            "Idempotency-Replayed": {"schema": {"type": "string"}},
+        },
+    },
+    202: {
+        "description": "Асинхронное действие принято.",
+        "headers": {
+            "ETag": {
+                "description": "Новая версия заказа",
+                "schema": {"type": "string"},
+            },
+            "Idempotency-Replayed": {"schema": {"type": "string"}},
+        },
+    },
+    400: {"description": "Невалидный If-Match или reason."},
+    403: {"description": "Тестовый actor не соответствует owner."},
+    404: {"description": "Заказ не найден в owner scope."},
+    409: {"description": "Действие запрещено текущим state machine."},
+    412: {"description": "Версия If-Match устарела."},
+    428: {"description": "Заголовок If-Match отсутствует."},
+}
 
 
 def create_order_action_router() -> APIRouter:
@@ -30,14 +59,21 @@ def create_order_action_router() -> APIRouter:
         "/customers/{customer_id}/orders/{order_id}/cancel",
         response_model=OrderResponse,
         status_code=202,
-        responses={200: {"model": OrderResponse}},
+        summary="Отменить заказ покупателем",
+        description="Принимает отмену до CONFIRMED и асинхронно освобождает резерв.",
+        responses=ACTION_RESPONSES,
     )
     def customer_cancel(
         customer_id: Annotated[int, Path(gt=0)],
         order_id: uuid.UUID,
         body: CancelOrderRequest = Body(default_factory=CancelOrderRequest),
         actor: TestActor = Depends(require_customer_actor),
-        if_match: str | None = Header(default=None, alias="If-Match"),
+        if_match: str | None = Header(
+            default=None,
+            alias="If-Match",
+            description='Обязательный ETag в точном формате "<positive version>".',
+            examples=['"2"'],
+        ),
         db: Session = Depends(get_db),
     ) -> JSONResponse:
         _require_path_subject(actor, customer_id)
@@ -57,14 +93,21 @@ def create_order_action_router() -> APIRouter:
         "/suppliers/{supplier_id}/orders/{order_id}/confirm",
         response_model=OrderResponse,
         status_code=202,
-        responses={200: {"model": OrderResponse}},
+        summary="Подтвердить заказ поставщиком",
+        description="Переводит RESERVED заказ в асинхронную финализацию остатков.",
+        responses=ACTION_RESPONSES,
     )
     def supplier_confirm(
         supplier_id: Annotated[int, Path(gt=0)],
         order_id: uuid.UUID,
         _body: ConfirmOrderRequest,
         actor: TestActor = Depends(require_supplier_actor),
-        if_match: str | None = Header(default=None, alias="If-Match"),
+        if_match: str | None = Header(
+            default=None,
+            alias="If-Match",
+            description='Обязательный ETag в точном формате "<positive version>".',
+            examples=['"2"'],
+        ),
         db: Session = Depends(get_db),
     ) -> JSONResponse:
         _require_path_subject(actor, supplier_id)
@@ -81,14 +124,21 @@ def create_order_action_router() -> APIRouter:
         "/suppliers/{supplier_id}/orders/{order_id}/reject",
         response_model=OrderResponse,
         status_code=202,
-        responses={200: {"model": OrderResponse}},
+        summary="Отклонить заказ поставщиком",
+        description="Переводит RESERVED заказ в асинхронное освобождение резерва.",
+        responses=ACTION_RESPONSES,
     )
     def supplier_reject(
         supplier_id: Annotated[int, Path(gt=0)],
         order_id: uuid.UUID,
         body: OrderActionReasonRequest,
         actor: TestActor = Depends(require_supplier_actor),
-        if_match: str | None = Header(default=None, alias="If-Match"),
+        if_match: str | None = Header(
+            default=None,
+            alias="If-Match",
+            description='Обязательный ETag в точном формате "<positive version>".',
+            examples=['"2"'],
+        ),
         db: Session = Depends(get_db),
     ) -> JSONResponse:
         _require_path_subject(actor, supplier_id)

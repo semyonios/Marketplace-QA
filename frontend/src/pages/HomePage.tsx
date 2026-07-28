@@ -22,13 +22,13 @@ export function HomePage() {
         </p>
       </header>
       <section className="role-grid">
-        <button type="button" className="role-card customer" onClick={() => choose("CUSTOMER")}>
+        <button type="button" className="role-card customer" data-testid="home-role-customer" onClick={() => choose("CUSTOMER")}>
           <span className="role-index">01</span>
           <strong>Customer</strong>
           <p>Каталог, single-supplier корзина, checkout и отмена заказа.</p>
           <span className="role-action">Выбрать покупателя →</span>
         </button>
-        <button type="button" className="role-card supplier" onClick={() => choose("SUPPLIER")}>
+        <button type="button" className="role-card supplier" data-testid="home-role-supplier" onClick={() => choose("SUPPLIER")}>
           <span className="role-index">02</span>
           <strong>Supplier</strong>
           <p>Товары, склады, остатки, подтверждение и отклонение заказов.</p>

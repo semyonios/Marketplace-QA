@@ -22,13 +22,41 @@ def create_order_router() -> APIRouter:
         "/orders",
         response_model=OrderResponse,
         status_code=202,
-        responses={200: {"model": OrderResponse}},
+        summary="Создать заказ",
+        description="Создаёт single-supplier заказ по неизменяемому snapshot корзины. Повтор с тем же Idempotency-Key и телом возвращает существующий заказ.",
+        responses={
+            200: {
+                "model": OrderResponse,
+                "description": "Идемпотентный replay существующего заказа.",
+                "headers": {
+                    "ETag": {"description": "Текущая версия заказа", "schema": {"type": "string"}},
+                    "Idempotency-Replayed": {"schema": {"type": "string"}},
+                },
+            },
+            202: {
+                "description": "Заказ принят для асинхронного резервирования.",
+                "headers": {
+                    "ETag": {"description": "Текущая версия заказа", "schema": {"type": "string"}},
+                    "Location": {"schema": {"type": "string"}},
+                    "Idempotency-Replayed": {"schema": {"type": "string"}},
+                },
+            },
+            400: {"description": "Невалидный запрос или Idempotency-Key."},
+            403: {"description": "Тестовый actor не владеет customer ID."},
+            409: {"description": "Конфликт idempotency/cart snapshot/business rule."},
+            503: {"description": "Customer snapshot service временно недоступен."},
+        },
     )
     def create(
         order_request: CreateOrderRequest,
         request: Request,
         actor: TestActor = Depends(require_customer_actor),
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+            description="Обязательный ключ идемпотентности create order.",
+            examples=["checkout-customer-1-cart-v7"],
+        ),
         db: Session = Depends(get_db),
     ) -> JSONResponse:
         if actor.subject_id != order_request.customer_id:

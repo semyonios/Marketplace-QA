@@ -34,6 +34,19 @@ from .dependencies import (
 )
 
 ALLOWED_LIST_QUERY_PARAMS = {"page", "limit", "status", "created_from", "created_to"}
+DETAIL_RESPONSES = {
+    200: {
+        "description": "Публичное представление заказа.",
+        "headers": {
+            "ETag": {
+                "description": "Текущая версия заказа",
+                "schema": {"type": "string"},
+            }
+        },
+    },
+    403: {"description": "Тестовый actor не соответствует owner."},
+    404: {"description": "Заказ не найден в owner scope."},
+}
 
 
 def get_order_list_filters(
@@ -87,6 +100,9 @@ def create_order_read_router() -> APIRouter:
     @router.get(
         "/customers/{customer_id}/orders",
         response_model=CustomerOrderListResponse,
+        summary="Получить заказы покупателя",
+        description="Owner-scoped список с пагинацией, фильтрами и сортировкой created_at DESC, id DESC.",
+        responses={400: {"description": "Невалидный фильтр."}, 403: {"description": "Actor mismatch."}},
     )
     def customer_orders(
         customer_id: Annotated[int, Path(gt=0)],
@@ -110,6 +126,9 @@ def create_order_read_router() -> APIRouter:
     @router.get(
         "/customers/{customer_id}/orders/{order_id}",
         response_model=OrderResponse,
+        summary="Получить заказ покупателя",
+        description="Возвращает публичный order DTO, динамические available_actions и append-only history.",
+        responses=DETAIL_RESPONSES,
     )
     def customer_order_detail(
         customer_id: Annotated[int, Path(gt=0)],
@@ -128,6 +147,9 @@ def create_order_read_router() -> APIRouter:
     @router.get(
         "/suppliers/{supplier_id}/orders",
         response_model=SupplierOrderListResponse,
+        summary="Получить заказы поставщика",
+        description="Owner-scoped список с пагинацией, фильтрами и стабильной сортировкой.",
+        responses={400: {"description": "Невалидный фильтр."}, 403: {"description": "Actor mismatch."}},
     )
     def supplier_orders(
         supplier_id: Annotated[int, Path(gt=0)],
@@ -151,6 +173,9 @@ def create_order_read_router() -> APIRouter:
     @router.get(
         "/suppliers/{supplier_id}/orders/{order_id}",
         response_model=OrderResponse,
+        summary="Получить заказ поставщика",
+        description="Возвращает публичный order DTO, Supplier available_actions и append-only history.",
+        responses=DETAIL_RESPONSES,
     )
     def supplier_order_detail(
         supplier_id: Annotated[int, Path(gt=0)],

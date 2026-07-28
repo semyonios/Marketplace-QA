@@ -1,0 +1,160 @@
+{
+  "info": {
+    "_postman_id": "9e6a80fd-72fd-4ae0-a73d-f5e8709ab24a",
+    "name": "Marketplace-QA 2.0",
+    "description": "Актуальные REST-запросы Marketplace-QA 2.0. Перед order flow добавьте Product #1 в корзину и выполните Get cart: запрос сохранит cart_version. Create order сохраняет order_id и ETag; detail/actions обновляют ETag.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health and readiness",
+      "item": [
+        {
+          "name": "Frontend health",
+          "request": {"method": "GET", "url": "{{frontend_url}}/health"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('HTTP 200', () => pm.response.to.have.status(200));"]}}]
+        },
+        {
+          "name": "Customer health",
+          "request": {"method": "GET", "url": "{{customer_url}}/health"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('HTTP 200', () => pm.response.to.have.status(200));"]}}]
+        },
+        {
+          "name": "Supplier readiness",
+          "request": {"method": "GET", "url": "{{supplier_url}}/ready"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Ready with DB/Kafka/migrations', () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.status).to.eql('ready'); pm.expect(body.dependencies.kafka).to.eql('up'); pm.expect(body.dependencies.migrations).to.eql('up_to_date'); });"]}}]
+        },
+        {
+          "name": "Order readiness",
+          "request": {"method": "GET", "url": "{{order_url}}/ready"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Ready with DB/Kafka/migrations', () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.status).to.eql('ready'); pm.expect(body.dependencies.kafka).to.eql('up'); pm.expect(body.dependencies.migrations).to.eql('up_to_date'); });"]}}]
+        }
+      ]
+    },
+    {
+      "name": "Catalog and cart",
+      "item": [
+        {
+          "name": "Customer catalog",
+          "request": {"method": "GET", "url": "{{customer_url}}/products"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Catalog schema', () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.items).to.be.an('array'); pm.expect(body.count).to.be.a('number'); });"]}}]
+        },
+        {
+          "name": "Customer product details",
+          "request": {"method": "GET", "url": "{{customer_url}}/products/{{product_id}}"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Product has supplier', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.have.property('supplier_id'); });"]}}]
+        },
+        {
+          "name": "Supplier products",
+          "request": {"method": "GET", "url": "{{supplier_url}}/products"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Source stock fields', () => { pm.response.to.have.status(200); const item = pm.response.json().items[0]; pm.expect(item).to.have.keys('stocks', 'reserved_stocks', 'available_stocks'); });"]}}]
+        },
+        {
+          "name": "Add product to cart",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\"user_id\": {{customer_id}}, \"product_id\": {{product_id}}, \"quantity\": 1}"},
+            "url": "{{customer_url}}/cart"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Added', () => pm.response.to.have.status(201));"]}}]
+        },
+        {
+          "name": "Get cart and save version",
+          "request": {"method": "GET", "url": "{{customer_url}}/cart?user_id={{customer_id}}"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Cart schema', () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.items).to.be.an('array'); pm.expect(body.cart_version).to.be.a('number'); });", "pm.environment.set('cart_version', pm.response.json().cart_version);"]}}]
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "Create order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Test-Role", "value": "CUSTOMER"},
+              {"key": "X-Test-Subject-ID", "value": "{{customer_id}}"},
+              {"key": "X-Correlation-ID", "value": "{{correlation_id}}"},
+              {"key": "Idempotency-Key", "value": "{{idempotency_key}}"}
+            ],
+            "body": {"mode": "raw", "raw": "{\"customer_id\": {{customer_id}}, \"cart_version\": {{cart_version}}}"},
+            "url": "{{order_url}}/api/v1/orders"
+          },
+          "event": [
+            {"listen": "prerequest", "script": {"exec": ["pm.environment.set('idempotency_key', pm.variables.replaceIn('{{$guid}}'));", "pm.environment.set('correlation_id', pm.variables.replaceIn('{{$guid}}'));"]}},
+            {"listen": "test", "script": {"exec": ["pm.test('Accepted or replayed', () => pm.expect([200, 202]).to.include(pm.response.code));", "const body = pm.response.json();", "pm.test('Public order schema', () => { pm.expect(body).to.include.keys('order_id', 'customer_id', 'supplier_id', 'status', 'operation_state', 'reservation_state', 'version', 'items', 'total_amount', 'currency', 'created_at', 'updated_at', 'correlation_id', 'available_actions', 'history'); });", "pm.environment.set('order_id', body.order_id);", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}
+          ]
+        },
+        {
+          "name": "Customer orders",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "X-Test-Role", "value": "CUSTOMER"}, {"key": "X-Test-Subject-ID", "value": "{{customer_id}}"}],
+            "url": "{{order_url}}/api/v1/customers/{{customer_id}}/orders?page=1&limit=20"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Paged list', () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body).to.have.keys('items', 'page', 'limit', 'count', 'total'); });"]}}]
+        },
+        {
+          "name": "Customer order details and save ETag",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "X-Test-Role", "value": "CUSTOMER"}, {"key": "X-Test-Subject-ID", "value": "{{customer_id}}"}],
+            "url": "{{order_url}}/api/v1/customers/{{customer_id}}/orders/{{order_id}}"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Order details', () => pm.response.to.have.status(200));", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}]
+        },
+        {
+          "name": "Supplier orders",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "X-Test-Role", "value": "SUPPLIER"}, {"key": "X-Test-Subject-ID", "value": "{{supplier_id}}"}],
+            "url": "{{order_url}}/api/v1/suppliers/{{supplier_id}}/orders?page=1&limit=20"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Paged list', () => pm.response.to.have.status(200));"]}}]
+        },
+        {
+          "name": "Supplier order details and save ETag",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "X-Test-Role", "value": "SUPPLIER"}, {"key": "X-Test-Subject-ID", "value": "{{supplier_id}}"}],
+            "url": "{{order_url}}/api/v1/suppliers/{{supplier_id}}/orders/{{order_id}}"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Order details', () => pm.response.to.have.status(200));", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}]
+        },
+        {
+          "name": "Supplier confirm",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Test-Role", "value": "SUPPLIER"}, {"key": "X-Test-Subject-ID", "value": "{{supplier_id}}"}, {"key": "If-Match", "value": "{{etag}}"}, {"key": "X-Correlation-ID", "value": "{{$guid}}"}],
+            "body": {"mode": "raw", "raw": "{}"},
+            "url": "{{order_url}}/api/v1/suppliers/{{supplier_id}}/orders/{{order_id}}/confirm"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Accepted', () => pm.expect([200, 202]).to.include(pm.response.code));", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}]
+        },
+        {
+          "name": "Supplier reject",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Test-Role", "value": "SUPPLIER"}, {"key": "X-Test-Subject-ID", "value": "{{supplier_id}}"}, {"key": "If-Match", "value": "{{etag}}"}, {"key": "X-Correlation-ID", "value": "{{$guid}}"}],
+            "body": {"mode": "raw", "raw": "{\"reason_code\": \"SUPPLIER_REJECTED\"}"},
+            "url": "{{order_url}}/api/v1/suppliers/{{supplier_id}}/orders/{{order_id}}/reject"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Accepted', () => pm.expect([200, 202]).to.include(pm.response.code));", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}]
+        },
+        {
+          "name": "Customer cancel",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Test-Role", "value": "CUSTOMER"}, {"key": "X-Test-Subject-ID", "value": "{{customer_id}}"}, {"key": "If-Match", "value": "{{etag}}"}, {"key": "X-Correlation-ID", "value": "{{$guid}}"}],
+            "body": {"mode": "raw", "raw": "{\"reason_code\": \"CUSTOMER_REQUEST\"}"},
+            "url": "{{order_url}}/api/v1/customers/{{customer_id}}/orders/{{order_id}}/cancel"
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Accepted', () => pm.expect([200, 202]).to.include(pm.response.code));", "pm.environment.set('etag', pm.response.headers.get('ETag'));"]}}]
+        }
+      ]
+    }
+  ]
+}

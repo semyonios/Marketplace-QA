@@ -236,6 +236,36 @@ services:
         condition: service_started
       supplier-service:
         condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  seed-data:
+    image: python:3.12-alpine
+    container_name: marketplace-seed-data
+    environment:
+      SUPPLIER_URL: http://supplier-service:8000
+      CUSTOMER_URL: http://customer-service:8001
+      SEED_WAIT_SECONDS: 90
+    volumes:
+      - ./scripts:/tools:ro
+    command: ["python", "/tools/seed.py"]
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
+      supplier-service:
+        condition: service_healthy
+      customer-service:
+        condition: service_healthy
+    restart: "no"
 
   order-migrations:
     build:
@@ -388,8 +418,8 @@ services:
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:
-      customer-service:
-        condition: service_started
+      seed-data:
+        condition: service_completed_successfully
       supplier-service:
         condition: service_healthy
       order-service:
@@ -400,6 +430,115 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+
+  order-tests:
+    profiles: ["tools"]
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile.test
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+psycopg://order_app:order_app@order-postgres:5432/order_db
+      TEST_DATABASE_URL: postgresql+psycopg://order_app:order_app@order-postgres:5432/order_db
+      TEST_KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      ALEMBIC_CONFIG: /app/alembic.ini
+      LOG_LEVEL: WARNING
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      kafka-broker:
+        condition: service_healthy
+
+  supplier-tests:
+    profiles: ["tools"]
+    build:
+      context: ./supplier-service
+      dockerfile: Dockerfile.test
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
+      TEST_SUPPLIER_DATABASE_URL: postgresql+psycopg://app:app@supplier-postgres:5432/supplier_db
+      TEST_KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      ALEMBIC_CONFIG: /app/alembic.ini
+      LOG_LEVEL: WARNING
+    depends_on:
+      supplier-postgres:
+        condition: service_healthy
+      kafka-broker:
+        condition: service_healthy
+
+  customer-tests:
+    profiles: ["tools"]
+    build:
+      context: ./customer-service
+      dockerfile: Dockerfile.test
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+psycopg://app:app@customer-postgres:5432/customer_db
+      TEST_CUSTOMER_DATABASE_URL: postgresql+psycopg://app:app@customer-postgres:5432/customer_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      SUPPLIER_PRODUCTS_URL: http://supplier-service:8000/products
+    depends_on:
+      customer-postgres:
+        condition: service_healthy
+      kafka-broker:
+        condition: service_healthy
+
+  frontend-tests:
+    profiles: ["tools"]
+    build:
+      context: ./frontend
+      target: build
+    command: ["pnpm", "test"]
+
+  smoke:
+    profiles: ["tools"]
+    image: python:3.12-alpine
+    environment:
+      FRONTEND_URL: http://frontend
+      CUSTOMER_URL: http://customer-service:8001
+      SUPPLIER_URL: http://supplier-service:8000
+      ORDER_URL: http://order-service:8000
+      SMOKE_WAIT_SECONDS: 90
+    volumes:
+      - ./scripts:/tools:ro
+    command: ["python", "/tools/smoke.py"]
+    depends_on:
+      seed-data:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_healthy
+
+  e2e:
+    profiles: ["tools"]
+    build:
+      context: ./e2e
+    environment:
+      FRONTEND_URL: http://frontend
+    volumes:
+      - ./e2e/playwright-report:/app/playwright-report
+      - ./e2e/test-results:/app/test-results
+    depends_on:
+      seed-data:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_healthy
+
+  dlq-tools:
+    profiles: ["tools"]
+    build:
+      context: ./order-service
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      KAFKA_DLQ_TOPIC: marketplace.order.dlq.v1
+    volumes:
+      - ./scripts:/tools:ro
+    entrypoint: ["python", "/tools/dlq.py"]
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
 
   audit-consumer:
     build:
