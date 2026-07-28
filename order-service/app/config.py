@@ -18,6 +18,13 @@ def _read_positive_int(name: str, default: int) -> int:
     return value
 
 
+def _read_bounded_positive_int(name: str, default: int, maximum: int) -> int:
+    value = _read_positive_int(name, default)
+    if value > maximum:
+        raise ValueError(f"{name} must be less than or equal to {maximum}")
+    return value
+
+
 def _read_positive_float(name: str, default: float) -> float:
     raw_value = os.getenv(name, str(default))
     try:
@@ -27,6 +34,15 @@ def _read_positive_float(name: str, default: float) -> float:
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero")
     return value
+
+
+def _read_bool(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name, str(default)).strip().lower()
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +58,16 @@ class Settings:
     readiness_timeout_seconds: float
     alembic_config: str
     customer_service_timeout_seconds: float = 1.0
+    outbox_publisher_enabled: bool = True
+    outbox_poll_interval_seconds: float = 1.0
+    outbox_batch_size: int = 100
+    outbox_claim_lease_seconds: float = 30.0
+    outbox_base_retry_delay_seconds: float = 1.0
+    outbox_max_retry_delay_seconds: float = 30.0
+    outbox_max_attempts: int = 10
+    kafka_delivery_timeout_seconds: float = 10.0
+    kafka_order_events_topic: str = "marketplace.order.events.v1"
+    kafka_stock_commands_topic: str = "marketplace.stock.commands.v1"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -67,6 +93,37 @@ class Settings:
             customer_service_timeout_seconds=_read_positive_float(
                 "CUSTOMER_SERVICE_TIMEOUT_SECONDS",
                 1.0,
+            ),
+            outbox_publisher_enabled=_read_bool("OUTBOX_PUBLISHER_ENABLED", True),
+            outbox_poll_interval_seconds=_read_positive_float(
+                "OUTBOX_POLL_INTERVAL_SECONDS",
+                1.0,
+            ),
+            outbox_batch_size=_read_bounded_positive_int("OUTBOX_BATCH_SIZE", 100, 100),
+            outbox_claim_lease_seconds=_read_positive_float(
+                "OUTBOX_CLAIM_LEASE_SECONDS",
+                30.0,
+            ),
+            outbox_base_retry_delay_seconds=_read_positive_float(
+                "OUTBOX_BASE_RETRY_DELAY_SECONDS",
+                1.0,
+            ),
+            outbox_max_retry_delay_seconds=_read_positive_float(
+                "OUTBOX_MAX_RETRY_DELAY_SECONDS",
+                30.0,
+            ),
+            outbox_max_attempts=_read_positive_int("OUTBOX_MAX_ATTEMPTS", 10),
+            kafka_delivery_timeout_seconds=_read_positive_float(
+                "KAFKA_DELIVERY_TIMEOUT_SECONDS",
+                10.0,
+            ),
+            kafka_order_events_topic=os.getenv(
+                "KAFKA_ORDER_EVENTS_TOPIC",
+                "marketplace.order.events.v1",
+            ),
+            kafka_stock_commands_topic=os.getenv(
+                "KAFKA_STOCK_COMMANDS_TOPIC",
+                "marketplace.stock.commands.v1",
             ),
         )
 

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -16,6 +17,7 @@ from .config import Settings, get_settings
 from .database import check_readiness, engine
 from .errors import register_exception_handlers
 from .logging_config import configure_logging, reset_correlation_id, set_correlation_id
+from .messaging.kafka_producer import check_kafka_connectivity
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ def create_app(
     application_settings: Settings | None = None,
     *,
     cart_snapshot_client: CustomerServiceClient | None = None,
+    kafka_readiness_checker: Callable[[], None] | None = None,
 ) -> FastAPI:
     settings = application_settings or get_settings()
     configure_logging(settings)
@@ -46,7 +49,16 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
-    application.state.readiness_checker = check_readiness
+    kafka_checker = kafka_readiness_checker or partial(
+        check_kafka_connectivity,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        timeout_seconds=settings.readiness_timeout_seconds,
+    )
+    application.state.readiness_checker = partial(
+        check_readiness,
+        application_settings=settings,
+        kafka_checker=kafka_checker,
+    )
     application.state.cart_snapshot_client = cart_snapshot_client or CustomerServiceClient(
         base_url=settings.customer_service_url,
         timeout_seconds=settings.customer_service_timeout_seconds,

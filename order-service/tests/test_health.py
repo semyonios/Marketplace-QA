@@ -35,11 +35,12 @@ def test_health_returns_200_without_database_check() -> None:
     assert response.headers["X-Correlation-ID"]
 
 
-def test_ready_returns_200_when_database_and_migrations_are_ready() -> None:
+def test_ready_returns_200_when_database_migrations_and_kafka_are_ready() -> None:
     application = create_app(_test_settings())
     application.state.readiness_checker = lambda: ReadinessState(
         database="up",
         migrations="up_to_date",
+        kafka="up",
     )
 
     with TestClient(application) as client:
@@ -52,7 +53,7 @@ def test_ready_returns_200_when_database_and_migrations_are_ready() -> None:
         "dependencies": {
             "database": "up",
             "migrations": "up_to_date",
-            "kafka": "not_configured",
+            "kafka": "up",
         },
     }
 
@@ -62,7 +63,7 @@ def test_ready_returns_503_when_database_is_unavailable() -> None:
 
     def unavailable() -> ReadinessState:
         raise ReadinessCheckError(
-            ReadinessState(database="down", migrations="unknown"),
+            ReadinessState(database="down", migrations="unknown", kafka="unknown"),
             "order database is unavailable",
         )
 
@@ -77,6 +78,31 @@ def test_ready_returns_503_when_database_is_unavailable() -> None:
         "dependencies": {
             "database": "down",
             "migrations": "unknown",
-            "kafka": "not_configured",
+            "kafka": "unknown",
+        },
+    }
+
+
+def test_ready_returns_503_when_kafka_is_unavailable() -> None:
+    application = create_app(_test_settings())
+
+    def unavailable() -> ReadinessState:
+        raise ReadinessCheckError(
+            ReadinessState(database="up", migrations="up_to_date", kafka="down"),
+            "Kafka is unavailable",
+        )
+
+    application.state.readiness_checker = unavailable
+    with TestClient(application) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "service": "order-service",
+        "dependencies": {
+            "database": "up",
+            "migrations": "up_to_date",
+            "kafka": "down",
         },
     }

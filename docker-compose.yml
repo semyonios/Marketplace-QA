@@ -72,7 +72,17 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
       CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -161,6 +171,9 @@ services:
       CUSTOMER_SERVICE_TIMEOUT_SECONDS: 1
       READINESS_TIMEOUT_SECONDS: 2
       ALEMBIC_CONFIG: /app/alembic.ini
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      KAFKA_ORDER_EVENTS_TOPIC: marketplace.order.events.v1
+      KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
     ports:
       - "${ORDER_SERVICE_PORT:-8002}:8000"
     depends_on:
@@ -179,6 +192,38 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  order-outbox-publisher:
+    build:
+      context: ./order-service
+    container_name: order-outbox-publisher
+    hostname: order-outbox-publisher
+    command: ["python", "-m", "app.outbox_publisher"]
+    environment:
+      SERVICE_NAME: order-service
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://${ORDER_DB_USER:-order_app}:${ORDER_DB_PASSWORD:-order_app}@order-postgres:5432/${ORDER_DB_NAME:-order_db}
+      LOG_LEVEL: INFO
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      OUTBOX_POLL_INTERVAL_SECONDS: 1
+      OUTBOX_BATCH_SIZE: 100
+      OUTBOX_CLAIM_LEASE_SECONDS: 30
+      OUTBOX_BASE_RETRY_DELAY_SECONDS: 1
+      OUTBOX_MAX_RETRY_DELAY_SECONDS: 30
+      OUTBOX_MAX_ATTEMPTS: 10
+      KAFKA_DELIVERY_TIMEOUT_SECONDS: 10
+      KAFKA_ORDER_EVENTS_TOPIC: marketplace.order.events.v1
+      KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      order-migrations:
+        condition: service_completed_successfully
+      kafka-broker:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
 
   audit-consumer:
     build:

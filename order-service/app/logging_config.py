@@ -20,6 +20,24 @@ def reset_correlation_id(token: Token[str | None]) -> None:
 
 
 class JsonFormatter(logging.Formatter):
+    CONTEXT_FIELDS = (
+        "worker",
+        "order_id",
+        "event_id",
+        "event_type",
+        "aggregate_id",
+        "correlation_id",
+        "causation_id",
+        "customer_id",
+        "supplier_id",
+        "topic",
+        "operation",
+        "attempt_count",
+        "duration_ms",
+        "result",
+        "error_code",
+    )
+
     def __init__(self, service: str, environment: str) -> None:
         super().__init__()
         self.service = service
@@ -36,6 +54,10 @@ class JsonFormatter(logging.Formatter):
         correlation_id = correlation_id_context.get()
         if correlation_id is not None:
             payload["correlation_id"] = correlation_id
+        for field_name in self.CONTEXT_FIELDS:
+            value = getattr(record, field_name, None)
+            if value is not None:
+                payload[field_name] = value
         if record.exc_info:
             payload["exception_type"] = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
         return json.dumps(payload, ensure_ascii=False)

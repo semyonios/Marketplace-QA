@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from alembic.config import Config
@@ -39,7 +40,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 class ReadinessState:
     database: str
     migrations: str
-    kafka: str = "not_configured"
+    kafka: str = "unknown"
 
 
 class ReadinessCheckError(RuntimeError):
@@ -60,6 +61,7 @@ def check_readiness(
     *,
     database_engine: Engine = engine,
     application_settings: Settings = settings,
+    kafka_checker: Callable[[], None] | None = None,
 ) -> ReadinessState:
     try:
         with database_engine.connect() as connection:
@@ -85,4 +87,20 @@ def check_readiness(
             "database migration revision is out of date",
         )
 
-    return ReadinessState(database="up", migrations="up_to_date")
+    if not application_settings.outbox_publisher_enabled:
+        return ReadinessState(database="up", migrations="up_to_date", kafka="disabled")
+
+    if kafka_checker is None:
+        raise ReadinessCheckError(
+            ReadinessState(database="up", migrations="up_to_date", kafka="unknown"),
+            "Kafka readiness checker is not configured",
+        )
+    try:
+        kafka_checker()
+    except Exception as exc:
+        raise ReadinessCheckError(
+            ReadinessState(database="up", migrations="up_to_date", kafka="down"),
+            "Kafka is unavailable",
+        ) from exc
+
+    return ReadinessState(database="up", migrations="up_to_date", kafka="up")
