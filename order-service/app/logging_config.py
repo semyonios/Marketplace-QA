@@ -21,6 +21,7 @@ def reset_correlation_id(token: Token[str | None]) -> None:
 
 class JsonFormatter(logging.Formatter):
     CONTEXT_FIELDS = (
+        "consumer",
         "worker",
         "order_id",
         "event_id",
@@ -32,6 +33,11 @@ class JsonFormatter(logging.Formatter):
         "supplier_id",
         "topic",
         "operation",
+        "reservation_request_id",
+        "order_version_before",
+        "order_version_after",
+        "transition",
+        "attempt",
         "attempt_count",
         "duration_ms",
         "result",

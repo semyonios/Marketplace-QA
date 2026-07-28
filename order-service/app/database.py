@@ -87,7 +87,11 @@ def check_readiness(
             "database migration revision is out of date",
         )
 
-    if not application_settings.outbox_publisher_enabled:
+    kafka_workers_enabled = (
+        application_settings.outbox_publisher_enabled
+        or application_settings.stock_events_consumer_enabled
+    )
+    if not kafka_workers_enabled:
         return ReadinessState(database="up", migrations="up_to_date", kafka="disabled")
 
     if kafka_checker is None:

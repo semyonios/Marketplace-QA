@@ -43,6 +43,8 @@ def main() -> None:
             topics_by_event_type={
                 "OrderCreated": settings.kafka_order_events_topic,
                 "StockReservationRequested": settings.kafka_stock_commands_topic,
+                "OrderReserved": settings.kafka_order_events_topic,
+                "OrderRejected": settings.kafka_order_events_topic,
             },
         ),
         worker_id=worker_id,

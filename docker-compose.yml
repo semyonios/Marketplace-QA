@@ -268,8 +268,11 @@ services:
       READINESS_TIMEOUT_SECONDS: 2
       ALEMBIC_CONFIG: /app/alembic.ini
       OUTBOX_PUBLISHER_ENABLED: "true"
+      STOCK_EVENTS_CONSUMER_ENABLED: "true"
       KAFKA_ORDER_EVENTS_TOPIC: marketplace.order.events.v1
       KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
+      KAFKA_STOCK_EVENTS_TOPIC: marketplace.stock.events.v1
+      KAFKA_DLQ_TOPIC: marketplace.order.dlq.v1
     ports:
       - "${ORDER_SERVICE_PORT:-8002}:8000"
     depends_on:
@@ -311,6 +314,37 @@ services:
       KAFKA_DELIVERY_TIMEOUT_SECONDS: 10
       KAFKA_ORDER_EVENTS_TOPIC: marketplace.order.events.v1
       KAFKA_STOCK_COMMANDS_TOPIC: marketplace.stock.commands.v1
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      order-migrations:
+        condition: service_completed_successfully
+      kafka-broker:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  order-stock-events-consumer:
+    build:
+      context: ./order-service
+    container_name: order-stock-events-consumer
+    hostname: order-stock-events-consumer
+    command: ["python", "-m", "app.stock_events_consumer"]
+    environment:
+      SERVICE_NAME: order-service
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://${ORDER_DB_USER:-order_app}:${ORDER_DB_PASSWORD:-order_app}@order-postgres:5432/${ORDER_DB_NAME:-order_db}
+      LOG_LEVEL: INFO
+      ALEMBIC_CONFIG: /app/alembic.ini
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broker:9092
+      STOCK_EVENTS_CONSUMER_ENABLED: "true"
+      STOCK_EVENTS_CONSUMER_GROUP_ID: order-service-stock-events-v1
+      STOCK_EVENTS_CONSUMER_NAME: order-service-stock-events-v1
+      STOCK_EVENTS_CONSUMER_MAX_ATTEMPTS: 3
+      STOCK_EVENTS_CONSUMER_POLL_SECONDS: 1
+      KAFKA_DELIVERY_TIMEOUT_SECONDS: 10
+      KAFKA_STOCK_EVENTS_TOPIC: marketplace.stock.events.v1
+      KAFKA_DLQ_TOPIC: marketplace.order.dlq.v1
     depends_on:
       order-postgres:
         condition: service_healthy

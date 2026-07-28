@@ -59,6 +59,7 @@ class Settings:
     alembic_config: str
     customer_service_timeout_seconds: float = 1.0
     outbox_publisher_enabled: bool = True
+    stock_events_consumer_enabled: bool = True
     outbox_poll_interval_seconds: float = 1.0
     outbox_batch_size: int = 100
     outbox_claim_lease_seconds: float = 30.0
@@ -68,6 +69,12 @@ class Settings:
     kafka_delivery_timeout_seconds: float = 10.0
     kafka_order_events_topic: str = "marketplace.order.events.v1"
     kafka_stock_commands_topic: str = "marketplace.stock.commands.v1"
+    kafka_stock_events_topic: str = "marketplace.stock.events.v1"
+    kafka_dlq_topic: str = "marketplace.order.dlq.v1"
+    stock_events_consumer_group_id: str = "order-service-stock-events-v1"
+    stock_events_consumer_name: str = "order-service-stock-events-v1"
+    stock_events_consumer_max_attempts: int = 3
+    stock_events_consumer_poll_seconds: float = 1.0
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -95,6 +102,10 @@ class Settings:
                 1.0,
             ),
             outbox_publisher_enabled=_read_bool("OUTBOX_PUBLISHER_ENABLED", True),
+            stock_events_consumer_enabled=_read_bool(
+                "STOCK_EVENTS_CONSUMER_ENABLED",
+                True,
+            ),
             outbox_poll_interval_seconds=_read_positive_float(
                 "OUTBOX_POLL_INTERVAL_SECONDS",
                 1.0,
@@ -124,6 +135,30 @@ class Settings:
             kafka_stock_commands_topic=os.getenv(
                 "KAFKA_STOCK_COMMANDS_TOPIC",
                 "marketplace.stock.commands.v1",
+            ),
+            kafka_stock_events_topic=os.getenv(
+                "KAFKA_STOCK_EVENTS_TOPIC",
+                "marketplace.stock.events.v1",
+            ),
+            kafka_dlq_topic=os.getenv(
+                "KAFKA_DLQ_TOPIC",
+                "marketplace.order.dlq.v1",
+            ),
+            stock_events_consumer_group_id=os.getenv(
+                "STOCK_EVENTS_CONSUMER_GROUP_ID",
+                "order-service-stock-events-v1",
+            ),
+            stock_events_consumer_name=os.getenv(
+                "STOCK_EVENTS_CONSUMER_NAME",
+                "order-service-stock-events-v1",
+            ),
+            stock_events_consumer_max_attempts=_read_positive_int(
+                "STOCK_EVENTS_CONSUMER_MAX_ATTEMPTS",
+                3,
+            ),
+            stock_events_consumer_poll_seconds=_read_positive_float(
+                "STOCK_EVENTS_CONSUMER_POLL_SECONDS",
+                1.0,
             ),
         )
 
