@@ -20,11 +20,11 @@ jobs:
     name: Static checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - name: Python syntax
@@ -40,9 +40,8 @@ jobs:
       - name: Playwright typecheck
         working-directory: e2e
         run: |
-          npm install --global pnpm@9.15.4
-          pnpm install --frozen-lockfile
-          pnpm typecheck
+          npm exec --yes --package=pnpm@9.15.4 -- pnpm install --frozen-lockfile
+          npm exec --yes --package=pnpm@9.15.4 -- pnpm typecheck
       - name: Docker Compose validation
         run: docker compose config --quiet
 
@@ -50,7 +49,7 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Start test dependencies
         run: docker compose up -d supplier-postgres customer-postgres order-postgres kafka-broker
       - name: Build test images
@@ -72,8 +71,8 @@ jobs:
     name: Frontend tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - name: Install
@@ -93,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [static-checks, backend-tests, frontend-tests]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Start complete stack
         run: docker compose up --build -d
       - name: API and Kafka smoke
@@ -107,7 +106,7 @@ jobs:
         run: docker compose logs --no-color > docker-compose.log
       - name: Upload Playwright artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-artifacts
           path: |
