@@ -1,169 +1,502 @@
+from __future__ import annotations
+
 import json
 import logging
-import os
+import signal
 import threading
 import time
 import uuid
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Protocol
 
-from confluent_kafka import Consumer
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from confluent_kafka import Consumer, TopicPartition
 
-from .database import SessionLocal
-from .kafka_producer import publish_product_stock_event
-from .models import ProcessedEvent, Product, WarehouseProduct
-
-BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-TOPIC = os.getenv("KAFKA_ORDER_TOPIC", "order-events")
-GROUP_ID = os.getenv("KAFKA_ORDER_GROUP_ID", "supplier-order-events-consumer-group")
-MAX_RETRIES = 3
-
-logger = logging.getLogger(__name__)
-_started = False
-_lock = threading.Lock()
-
-consumer = Consumer(
-    {
-        "bootstrap.servers": BOOTSTRAP_SERVERS,
-        "group.id": GROUP_ID,
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": False,
-        "topic.metadata.refresh.interval.ms": 5000,
-    }
+from .config import Settings, get_settings
+from .database import SessionLocal, engine
+from .logging_config import configure_logging
+from .messaging.kafka import ConfluentJsonProducer, JsonMessageProducer
+from .services.reservation import (
+    IncompatibleMessageError,
+    ReservationCommand,
+    ReservationProcessingResult,
+    ReservationService,
+    parse_reservation_command,
+)
+from .services.stock_lifecycle import (
+    StockLifecycleCommand,
+    StockLifecycleResult,
+    StockLifecycleService,
+    parse_stock_lifecycle_command,
 )
 
+logger = logging.getLogger(__name__)
 
 
-def reserve_event_id(db: Session, event_id: str | None) -> bool:
-    if not event_id:
-        return True
+class KafkaConsumerClient(Protocol):
+    def subscribe(self, topics: list[str]) -> None: ...
 
-    stmt = (
-        insert(ProcessedEvent)
-        .values(event_id=uuid.UUID(event_id))
-        .on_conflict_do_nothing(index_elements=[ProcessedEvent.event_id])
-        .returning(ProcessedEvent.event_id)
-    )
-    inserted_event_id = db.execute(stmt).scalar_one_or_none()
-    return inserted_event_id is not None
+    def poll(self, timeout: float): ...
+
+    def commit(self, *, message, asynchronous: bool = False): ...
+
+    def seek(self, partition: TopicPartition) -> None: ...
+
+    def close(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class IncomingKafkaMessage:
+    topic: str
+    partition: int
+    offset: int
+    key: str | None
+    value: bytes
+    headers: dict[str, str | None]
 
-def apply_order_to_inventory(db: Session, product_id: int, ordered_quantity: int) -> tuple[bool, int] | tuple[bool, None]:
-    product = db.get(Product, product_id)
-    if not product:
-        return False, None
 
-    rows = list(
-        db.scalars(
-            select(WarehouseProduct)
-            .where(WarehouseProduct.product_id == product_id)
-            .order_by(WarehouseProduct.warehouse_id, WarehouseProduct.product_id)
+@dataclass(frozen=True, slots=True)
+class MessageHandlingResult:
+    result: str
+    attempts: int
+    event_id: str | None
+
+
+class ReservationMessageHandler:
+    def __init__(
+        self,
+        *,
+        reservation_service: ReservationService,
+        lifecycle_service: StockLifecycleService | None = None,
+        dlq_producer: JsonMessageProducer,
+        settings: Settings,
+        clock: Callable[[], datetime] | None = None,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._reservation_service = reservation_service
+        self._lifecycle_service = lifecycle_service
+        self._dlq_producer = dlq_producer
+        self._settings = settings
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._sleeper = sleeper
+
+    def handle(self, message: IncomingKafkaMessage) -> MessageHandlingResult:
+        first_failed_at: datetime | None = None
+        last_exception: Exception | None = None
+        command: ReservationCommand | StockLifecycleCommand | None = None
+        envelope: Mapping[str, Any] | None = None
+        category = "TECHNICAL_FAILURE"
+        code = "processing_failed"
+
+        for attempt in range(1, self._settings.consumer_max_attempts + 1):
+            started_at = time.monotonic()
+            try:
+                envelope = _decode_envelope(message.value)
+                if envelope.get("event_type") == "StockReservationRequested":
+                    command = parse_reservation_command(envelope, headers=message.headers)
+                    processing = self._reservation_service.process(command)
+                else:
+                    if self._lifecycle_service is None:
+                        raise IncompatibleMessageError(
+                            "unsupported_event_type",
+                            "Unsupported stock command event type",
+                        )
+                    command = parse_stock_lifecycle_command(
+                        envelope,
+                        headers=message.headers,
+                    )
+                    processing = self._lifecycle_service.process(command)
+                self._log_result(
+                    command=command,
+                    processing=processing,
+                    attempt=attempt,
+                    duration_ms=(time.monotonic() - started_at) * 1000,
+                )
+                return MessageHandlingResult(
+                    result=processing.result,
+                    attempts=attempt,
+                    event_id=str(command.event_id),
+                )
+            except IncompatibleMessageError as exc:
+                category = "INCOMPATIBLE_MESSAGE"
+                code = exc.code
+                last_exception = exc
+            except Exception as exc:
+                category = "TECHNICAL_FAILURE"
+                code = "processing_failed"
+                last_exception = exc
+                if command is not None:
+                    try:
+                        service = (
+                            self._reservation_service
+                            if isinstance(command, ReservationCommand)
+                            else self._lifecycle_service
+                        )
+                        assert service is not None
+                        service.record_retryable_failure(
+                            command=command,
+                            safe_error="Reservation processing failed",
+                            attempt=attempt,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "could not persist retryable inbox state",
+                            extra={
+                                "consumer": self._settings.reservation_consumer_name,
+                                "event_id": str(command.event_id),
+                                "attempt": attempt,
+                                "result": "retry_state_unavailable",
+                            },
+                        )
+
+            failed_at = self._clock()
+            first_failed_at = first_failed_at or failed_at
+            logger.warning(
+                "reservation command attempt failed",
+                extra={
+                    "consumer": self._settings.reservation_consumer_name,
+                    "event_id": str(command.event_id) if command else _event_id(envelope),
+                    "event_type": envelope.get("event_type") if envelope else None,
+                    "order_id": str(command.order_id) if command else _aggregate_id(envelope),
+                    "reservation_request_id": (
+                        str(command.reservation_request_id) if command else None
+                    ),
+                    "reservation_id": (
+                        str(command.reservation_id)
+                        if isinstance(command, StockLifecycleCommand)
+                        and command.reservation_id
+                        else None
+                    ),
+                    "supplier_id": command.supplier_id if command else None,
+                    "correlation_id": (
+                        str(command.correlation_id) if command else _correlation_id(envelope)
+                    ),
+                    "causation_id": (
+                        str(command.causation_id)
+                        if command and command.causation_id
+                        else None
+                    ),
+                    "attempt": attempt,
+                    "result": "retry_scheduled" if attempt < self._settings.consumer_max_attempts else "dlq",
+                    "error_code": code,
+                },
+            )
+            if attempt < self._settings.consumer_max_attempts:
+                self._sleeper(1 if attempt == 1 else 5)
+
+        failed_at = self._clock()
+        dlq_message = _build_dlq_message(
+            message=message,
+            envelope=envelope,
+            category=category,
+            code=code,
+            safe_message=(
+                last_exception.safe_message
+                if isinstance(last_exception, IncompatibleMessageError)
+                else "Reservation command processing failed"
+            ),
+            attempt_count=self._settings.consumer_max_attempts,
+            first_failed_at=first_failed_at or failed_at,
+            last_failed_at=failed_at,
+            consumer_name=self._settings.reservation_consumer_name,
         )
-    )
-    if not rows:
-        return False, None
+        dlq_key = _aggregate_id(envelope) or message.key or "unknown"
+        self._dlq_producer.publish(
+            topic=self._settings.dlq_topic,
+            key=dlq_key,
+            value=dlq_message,
+            headers={
+                "content_type": "application/json",
+                "original_event_id": _event_id(envelope),
+                "correlation_id": _correlation_id(envelope),
+                "consumer_name": self._settings.reservation_consumer_name,
+            },
+        )
+        if command is not None:
+            service = (
+                self._reservation_service
+                if isinstance(command, ReservationCommand)
+                else self._lifecycle_service
+            )
+            assert service is not None
+            service.mark_dlq(
+                command=command,
+                safe_error="Reservation command moved to DLQ",
+                attempt=self._settings.consumer_max_attempts,
+            )
+        logger.error(
+            "reservation command moved to DLQ",
+            extra={
+                "consumer": self._settings.reservation_consumer_name,
+                "event_id": _event_id(envelope),
+                "event_type": envelope.get("event_type") if envelope else None,
+                "order_id": _aggregate_id(envelope),
+                "correlation_id": _correlation_id(envelope),
+                "attempt": self._settings.consumer_max_attempts,
+                "topic": self._settings.dlq_topic,
+                "result": "dlq_published",
+                "error_code": code,
+            },
+        )
+        return MessageHandlingResult(
+            result="DLQ",
+            attempts=self._settings.consumer_max_attempts,
+            event_id=_event_id(envelope),
+        )
 
-    remaining_quantity = ordered_quantity
-    initial_stocks = product.stocks
-    for row in rows:
-        if remaining_quantity <= 0:
-            break
-        taken = min(row.stocks, remaining_quantity)
-        row.stocks -= taken
-        remaining_quantity -= taken
+    def close(self) -> None:
+        self._dlq_producer.close()
 
-    fresh_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
-    product.stocks = sum(row.stocks for row in fresh_rows)
-    db.flush()
-
-    if product.stocks == initial_stocks:
-        return False, product.stocks
-
-    return True, product.stocks
-
-
-
-def process_message(raw_message: bytes) -> tuple[bool, str]:
-    data = json.loads(raw_message.decode("utf-8"))
-    event_version = data.get("event_version", 1)
-    logger.info("event received topic=%s event_version=%s payload=%s", TOPIC, event_version, data)
-
-    if data.get("event_type") != "ORDER_CREATED":
-        logger.info("event skipped topic=%s reason=unsupported_event_type", TOPIC)
-        return False, "skipped"
-
-    with SessionLocal() as db:
-        inserted = reserve_event_id(db, data.get("event_id"))
-        if not inserted:
-            db.rollback()
-            logger.info("event skipped topic=%s event_id=%s", TOPIC, data.get("event_id"))
-            return False, "skipped"
-
-        changed, total_quantity = apply_order_to_inventory(db, data["product_id"], data["quantity"])
-        db.commit()
-
-    if changed and total_quantity is not None:
-        publish_product_stock_event("STOCK_DECREASED_BY_ORDER", data["product_id"], total_quantity)
-
-    logger.info(
-        "event %s topic=%s product_id=%s",
-        "processed" if changed else "skipped",
-        TOPIC,
-        data["product_id"],
-    )
-    return changed, "processed" if changed else "skipped"
+    def _log_result(
+        self,
+        *,
+        command: ReservationCommand | StockLifecycleCommand,
+        processing: ReservationProcessingResult | StockLifecycleResult,
+        attempt: int,
+        duration_ms: float,
+    ) -> None:
+        logger.info(
+            "stock command processed",
+            extra={
+                "consumer": self._settings.reservation_consumer_name,
+                "event_id": str(command.event_id),
+                "event_type": (
+                    "StockReservationRequested"
+                    if isinstance(command, ReservationCommand)
+                    else command.event_type
+                ),
+                "order_id": str(command.order_id),
+                "reservation_request_id": str(command.reservation_request_id),
+                "supplier_id": command.supplier_id,
+                "correlation_id": str(command.correlation_id),
+                "causation_id": (
+                    str(command.causation_id) if command.causation_id else None
+                ),
+                "reservation_id": (
+                    str(command.reservation_id)
+                    if isinstance(command, StockLifecycleCommand)
+                    and command.reservation_id
+                    else None
+                ),
+                "action": (
+                    command.event_type
+                    if isinstance(command, StockLifecycleCommand)
+                    else "StockReservationRequested"
+                ),
+                "attempt": attempt,
+                "result": processing.result,
+                "rejection_reason": processing.reason_code,
+                "duration_ms": round(duration_ms, 3),
+            },
+        )
 
 
+class ReservationConsumerWorker:
+    def __init__(
+        self,
+        *,
+        consumer: KafkaConsumerClient,
+        handler: ReservationMessageHandler,
+        settings: Settings,
+    ) -> None:
+        self._consumer = consumer
+        self._handler = handler
+        self._settings = settings
+        self._stop_event = threading.Event()
 
-def consume_forever() -> None:
-    while True:
+    def run_forever(self) -> None:
+        self._consumer.subscribe([self._settings.stock_commands_topic])
+        logger.info(
+            "supplier reservation consumer started",
+            extra={
+                "consumer": self._settings.reservation_consumer_name,
+                "topic": self._settings.stock_commands_topic,
+            },
+        )
         try:
-            consumer.subscribe([TOPIC])
-            while True:
-                message = consumer.poll(1.0)
+            while not self._stop_event.is_set():
+                message = self._consumer.poll(self._settings.consumer_poll_seconds)
                 if message is None:
                     continue
                 if message.error():
-                    logger.warning("Supplier order consumer warning: %s", message.error())
+                    logger.warning("supplier reservation consumer poll warning")
                     continue
-
-                processed = False
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
-                        process_message(message.value())
-                        consumer.commit(message=message)
-                        processed = True
-                        break
-                    except (ValueError, SQLAlchemyError, json.JSONDecodeError):
-                        logger.exception(
-                            "Supplier consumer error on attempt %s/%s topic=%s", attempt, MAX_RETRIES, TOPIC
+                try:
+                    self.process_message(message)
+                except Exception:
+                    logger.exception("reservation message was not safely completed")
+                    self._consumer.seek(
+                        TopicPartition(
+                            message.topic(),
+                            message.partition(),
+                            message.offset(),
                         )
-                        time.sleep(1)
-                    except Exception:
-                        logger.exception(
-                            "Supplier consumer unexpected error on attempt %s/%s topic=%s",
-                            attempt,
-                            MAX_RETRIES,
-                            TOPIC,
-                        )
-                        time.sleep(1)
+                    )
+                    self._stop_event.wait(1)
+        finally:
+            self._consumer.close()
+            self._handler.close()
+            logger.info("supplier reservation consumer stopped")
 
-                if not processed:
-                    logger.error("Supplier consumer dead letter topic=%s payload=%s", TOPIC, message.value())
-        except Exception:
-            logger.exception("Supplier order consumer error")
-            time.sleep(5)
+    def process_message(self, message) -> MessageHandlingResult:
+        incoming = IncomingKafkaMessage(
+            topic=message.topic(),
+            partition=message.partition(),
+            offset=message.offset(),
+            key=(
+                None
+                if message.key() is None
+                else message.key().decode("utf-8", errors="replace")
+            ),
+            value=message.value(),
+            headers=_decode_headers(message.headers()),
+        )
+        result = self._handler.handle(incoming)
+        self._consumer.commit(message=message, asynchronous=False)
+        return result
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
 
+def main() -> None:
+    settings = get_settings()
+    configure_logging(settings)
+    if not settings.reservation_consumer_enabled:
+        logger.info("supplier reservation consumer is disabled")
+        return
 
-def start_stock_consumer() -> None:
-    global _started
-    with _lock:
-        if _started:
-            return
-        thread = threading.Thread(target=consume_forever, daemon=True)
-        thread.start()
-        _started = True
+    consumer = Consumer(
+        {
+            "bootstrap.servers": settings.kafka_bootstrap_servers,
+            "group.id": settings.reservation_consumer_group_id,
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
+            "enable.auto.offset.store": False,
+            "topic.metadata.refresh.interval.ms": 5000,
+        }
+    )
+    dlq_producer = ConfluentJsonProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        delivery_timeout_seconds=settings.kafka_delivery_timeout_seconds,
+    )
+    service = ReservationService(
+        session_factory=SessionLocal,
+        consumer_name=settings.reservation_consumer_name,
+    )
+    lifecycle_service = StockLifecycleService(
+        session_factory=SessionLocal,
+        consumer_name=settings.reservation_consumer_name,
+    )
+    handler = ReservationMessageHandler(
+        reservation_service=service,
+        lifecycle_service=lifecycle_service,
+        dlq_producer=dlq_producer,
+        settings=settings,
+    )
+    worker = ReservationConsumerWorker(
+        consumer=consumer,
+        handler=handler,
+        settings=settings,
+    )
+
+    def request_stop(_signum, _frame) -> None:
+        logger.info("supplier reservation consumer shutdown requested")
+        worker.stop()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    try:
+        worker.run_forever()
+    finally:
+        engine.dispose()
+
+
+def _decode_envelope(raw_message: bytes) -> Mapping[str, Any]:
+    try:
+        decoded = json.loads(raw_message.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IncompatibleMessageError("invalid_json", "Kafka message is not valid UTF-8 JSON") from exc
+    if not isinstance(decoded, Mapping):
+        raise IncompatibleMessageError("invalid_envelope", "Kafka message must be an object")
+    return decoded
+
+
+def _decode_headers(
+    headers: list[tuple[str, bytes | None]] | None,
+) -> dict[str, str | None]:
+    return {
+        name: None if value is None else value.decode("utf-8", errors="replace")
+        for name, value in (headers or [])
+    }
+
+
+def _build_dlq_message(
+    *,
+    message: IncomingKafkaMessage,
+    envelope: Mapping[str, Any] | None,
+    category: str,
+    code: str,
+    safe_message: str,
+    attempt_count: int,
+    first_failed_at: datetime,
+    last_failed_at: datetime,
+    consumer_name: str,
+) -> dict[str, Any]:
+    original_message: Any
+    if envelope is not None:
+        original_message = envelope
+    else:
+        original_message = {
+            "raw_utf8": message.value.decode("utf-8", errors="replace"),
+        }
+    return {
+        "dlq_record_id": str(uuid.uuid4()),
+        "failed_at": _timestamp(last_failed_at),
+        "consumer_name": consumer_name,
+        "original_topic": message.topic,
+        "original_partition": message.partition,
+        "original_offset": message.offset,
+        "original_key": message.key,
+        "original_headers": message.headers,
+        "original_event_id": _event_id(envelope),
+        "original_message": original_message,
+        "failure": {
+            "category": category,
+            "code": code,
+            "message": safe_message,
+            "attempt_count": attempt_count,
+            "first_failed_at": _timestamp(first_failed_at),
+            "last_failed_at": _timestamp(last_failed_at),
+        },
+        "correlation_id": _correlation_id(envelope),
+    }
+
+
+def _event_id(envelope: Mapping[str, Any] | None) -> str | None:
+    return None if envelope is None or envelope.get("event_id") is None else str(envelope["event_id"])
+
+
+def _aggregate_id(envelope: Mapping[str, Any] | None) -> str | None:
+    return (
+        None
+        if envelope is None or envelope.get("aggregate_id") is None
+        else str(envelope["aggregate_id"])
+    )
+
+
+def _correlation_id(envelope: Mapping[str, Any] | None) -> str | None:
+    return (
+        None
+        if envelope is None or envelope.get("correlation_id") is None
+        else str(envelope["correlation_id"])
+    )
+
+
+def _timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+if __name__ == "__main__":
+    main()

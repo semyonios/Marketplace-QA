@@ -1,0 +1,79 @@
+from enum import Enum
+
+
+class StringEnum(str, Enum):
+    """String enum with stable values for JSON and database constraints."""
+
+
+class OrderStatus(StringEnum):
+    PENDING_RESERVATION = "PENDING_RESERVATION"
+    RESERVED = "RESERVED"
+    CONFIRMATION_PENDING = "CONFIRMATION_PENDING"
+    CONFIRMED = "CONFIRMED"
+    REJECTION_PENDING = "REJECTION_PENDING"
+    REJECTED = "REJECTED"
+    CANCELLATION_PENDING = "CANCELLATION_PENDING"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+
+
+class BusinessStatus(StringEnum):
+    PENDING_RESERVATION = "PENDING_RESERVATION"
+    RESERVED = "RESERVED"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class OperationState(StringEnum):
+    NONE = "NONE"
+    CONFIRMATION_PENDING = "CONFIRMATION_PENDING"
+    CANCELLATION_PENDING = "CANCELLATION_PENDING"
+    REJECTION_PENDING = "REJECTION_PENDING"
+    FAILED = "FAILED"
+
+
+class ReservationState(StringEnum):
+    REQUESTED = "REQUESTED"
+    RESERVED = "RESERVED"
+    NOT_RESERVED = "NOT_RESERVED"
+    RELEASE_REQUESTED = "RELEASE_REQUESTED"
+    RELEASED = "RELEASED"
+    UNKNOWN = "UNKNOWN"
+
+
+class TargetTerminalStatus(StringEnum):
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+
+
+class FailurePhase(StringEnum):
+    RESERVATION = "RESERVATION"
+    CONFIRMATION = "CONFIRMATION"
+    RELEASE = "RELEASE"
+
+
+class ActorType(StringEnum):
+    CUSTOMER = "CUSTOMER"
+    SUPPLIER = "SUPPLIER"
+    SYSTEM = "SYSTEM"
+    KAFKA_CONSUMER = "KAFKA_CONSUMER"
+
+
+class IdempotencyState(StringEnum):
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED_RETRYABLE = "FAILED_RETRYABLE"
+
+
+class OutboxStatus(StringEnum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+
+
+class InboxStatus(StringEnum):
+    PROCESSING = "PROCESSING"
+    PROCESSED = "PROCESSED"
+    FAILED = "FAILED"

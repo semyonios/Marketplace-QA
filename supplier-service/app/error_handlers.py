@@ -12,6 +12,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "internal_error": "Internal server error",
     "supplier_not_found": "Supplier not found",
     "supplier_conflict": "Supplier with this email or phone already exists",
+    "supplier_has_products": "Supplier has products",
     "warehouse_not_found": "Warehouse not found",
     "product_not_found": "Product not found",
     "product_archived": "Product is archived",

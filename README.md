@@ -1,484 +1,290 @@
-# HTTP + Kafka Demo
+# Marketplace-QA
 
-Небольшой marketplace-проект для локального запуска и manual QA practice.
+Распределённый учебный e-commerce стенд для QA-инженера уровня Middle Manual QA. Проект позволяет в одном локальном окружении проверять frontend, REST API, PostgreSQL, Kafka, асинхронный жизненный цикл заказов и типовые сбои распределённой системы.
 
-Проект специально сделан простым: без auth, без внешних интеграций оплаты, без сложной оркестрации. При этом в нём уже есть два домена, event-driven взаимодействие через Kafka, отдельные сценарии для `favorites`, `cart`, `orders`, продуктовые флаги `is_active` и `is_archived`, а также единый формат ошибок.
+Это учебный проект и QA-лаборатория, а не production-магазин и не описание коммерческого опыта.
 
-## Архитектура
+## Что демонстрирует проект
 
-- `supplier-service` — источник истины для поставщиков, товаров, складов и остатков
-- `customer-service` — customer-side API с локальной копией каталога, а также `favorites`, `cart` и `orders`
-- `audit-consumer` — потребитель событий поставщиков
-- `Kafka` — транспорт событий между сервисами
+- React + TypeScript frontend для ролей Customer и Supplier;
+- REST API и OpenAPI/Swagger;
+- PostgreSQL с раздельным владением данными;
+- Kafka и eventual consistency;
+- transactional outbox и consumer inbox/deduplication;
+- идемпотентное создание заказа;
+- optimistic locking через `ETag` / `If-Match`;
+- all-or-nothing резервирование остатков;
+- confirm/finalize, reject/release и cancel/release;
+- компенсацию позднего успешного резервирования;
+- retry, timeout worker и DLQ;
+- correlation ID и structured logs ключевых order/supplier компонентов;
+- backend, component, API smoke и Playwright E2E проверки;
+- запуск и CI через Docker Compose.
 
-Важно для тестирования:
+## Architecture
 
-- `customer-service` получает изменения по товарам и остаткам не мгновенно, а через Kafka
-- между сервисами есть eventual consistency
-- при ручном тестировании после изменения товара или оформления заказа стоит учитывать небольшую задержку синхронизации
+```mermaid
+flowchart LR
+    Customer["Customer"] --> Frontend["React frontend :3000"]
+    Supplier["Supplier"] --> Frontend
+    Frontend --> CustomerService["customer-service :8001"]
+    Frontend --> SupplierService["supplier-service :8000"]
+    Frontend --> OrderService["order-service :8002"]
+    CustomerService --> CustomerDB[("customer-db")]
+    SupplierService --> SupplierDB[("supplier-db")]
+    OrderService --> OrderDB[("order-db")]
+    CustomerService <--> Kafka["Kafka :9092"]
+    SupplierService <--> Kafka
+    OrderService <--> Kafka
+    Kafka --> Audit["audit-consumer"]
+```
 
-## Состав сервисов
+`supplier-service` владеет товарами, складами, фактическими остатками и резервами. `customer-service` владеет пользователями, избранным, корзиной и локальной проекцией каталога. `order-service` является источником истины для заказа и координирует резервирование через Kafka.
 
-- `supplier-service`
-- `customer-service`
-- `audit-consumer`
-- `kafka-broker`
-- `kafka-ui`
-- `supplier-postgres`
-- `customer-postgres`
+Подробные диаграммы: [docs/architecture/README.md](docs/architecture/README.md). State machine: [docs/to-be/05-order-state-machine.md](docs/to-be/05-order-state-machine.md).
 
-## Как запустить проект
+## Services
+
+| Компонент | Назначение | Локальный адрес |
+|---|---|---|
+| frontend | Customer/Supplier UI, QA Panel, Dev Panel | http://localhost:3000 |
+| supplier-service | Поставщики, товары, склады, остатки и резервы | http://localhost:8000 |
+| customer-service | Пользователи, projection, favorites и cart | http://localhost:8001 |
+| order-service | Создание и жизненный цикл заказов | http://localhost:8002 |
+| Kafka UI | Просмотр topics и сообщений | http://localhost:8080 |
+| supplier-db | PostgreSQL supplier domain | localhost:5432 |
+| customer-db | PostgreSQL customer domain | localhost:5433 |
+| order-db | PostgreSQL order domain | localhost:5434 |
+| audit-consumer | Аудит legacy supplier events | без HTTP-порта |
+
+Также запускаются order/supplier outbox publishers, reservation/result consumers и order timeout worker.
+
+## Main business flows
+
+1. **Create / reserve:** Customer создаёт заказ → order outbox публикует `StockReservationRequested` → supplier резервирует все позиции либо отклоняет весь заказ → order-service применяет результат.
+2. **Confirm / finalize:** Supplier подтверждает `RESERVED` заказ → Kafka-команда финализирует stock → заказ становится `CONFIRMED`.
+3. **Reject / release:** Supplier отклоняет `RESERVED` заказ → резерв освобождается → заказ становится `REJECTED`.
+4. **Cancel / release:** Customer отменяет заказ до `CONFIRMED` → резерв освобождается → заказ становится `CANCELLED`.
+5. **Late success compensation:** если reservation success приходит после cancel request, order-service не восстанавливает заказ, а повторно инициирует release.
+
+Частичная комплектация не поддерживается: один заказ содержит товары одного поставщика и резервируется по правилу all-or-nothing.
+
+## Quick start
+
+Требуются Docker и Docker Compose.
 
 ```bash
-cd ~/Desktop/http-kafka-demo
+git clone https://github.com/semyonios/Marketplace-QA.git
+cd Marketplace-QA
 docker compose up --build -d
 ```
 
-После запуска доступны:
+Команда автоматически:
 
-- Supplier service: [http://localhost:8000/docs](http://localhost:8000/docs)
-- Customer service: [http://localhost:8001/docs](http://localhost:8001/docs)
-- Kafka UI: [http://localhost:8080](http://localhost:8080)
+- поднимает три PostgreSQL, Kafka и Kafka UI;
+- применяет Alembic migrations order/supplier;
+- создаёт Kafka topics через broker auto-create;
+- создаёт детерминированные seed-данные;
+- запускает API, publishers, consumers, worker и frontend;
+- ожидает обязательные healthchecks.
 
-## Основные API-сценарии
+Откройте http://localhost:3000. Альтернативная команда: `make up`.
 
-### `supplier-service`
-
-#### Поставщики
-
-- `POST /suppliers`
-- `GET /suppliers`
-- `GET /suppliers/{id}`
-- `PUT /suppliers/{id}`
-- `DELETE /suppliers/{id}`
-
-#### Товары
-
-- `POST /products`
-- `GET /products`
-- `GET /products/{id}`
-- `PUT /products/{id}`
-- `DELETE /products/{id}`
-- `POST /warehouses/{warehouse_id}/stocks`
-
-Поля товара:
-
-- `name` — непустое название
-- `price` — цена должна быть больше `0`
-- `stocks` — агрегированный остаток, не может быть отрицательным
-- `is_active` — доступен ли товар для покупки
-- `is_archived` — архивный ли товар
-
-#### Склады
-
-- `POST /warehouses`
-- `GET /warehouses`
-- `GET /warehouses/{warehouse_id}`
-- `PUT /warehouses/{warehouse_id}`
-- `DELETE /warehouses/{warehouse_id}`
-
-### `customer-service`
-
-#### Покупатели
-
-- `POST /users`
-- `GET /users`
-- `GET /users/{id}`
-
-#### Избранное
-
-- `POST /favorites`
-- `GET /favorites?user_id=1`
-- `DELETE /favorites/{product_id}?user_id=1`
-
-#### Корзина
-
-- `GET /cart?user_id=1`
-- `POST /cart`
-- `PATCH /cart/{product_id}`
-- `DELETE /cart/{product_id}?user_id=1`
-
-#### Заказы
-
-- `POST /orders`
-- `GET /orders?user_id=1`
-- `GET /orders/{order_id}?user_id=1`
-- `POST /orders/{order_id}/cancel?user_id=1`
-
-## Как тестировать вручную
-
-Ниже базовый happy-path, который удобно прогонять руками через Swagger или `curl`.
-
-### Сценарий 1. Создать поставщика и товар
-
-1. Создать поставщика через `POST /suppliers`
-2. Создать склад через `POST /warehouses`
-3. Создать товар через `POST /products`
-4. Назначить остаток через `POST /warehouses/{warehouse_id}/stocks`
-5. Проверить товар через `GET /products`
-
-### Сценарий 2. Проверить каталог покупателя
-
-1. Открыть `GET /products` в `customer-service`
-2. Убедиться, что товар появился в локальной копии каталога
-3. Если товар не появился сразу, подождать немного и повторить запрос
-
-Это нормальное поведение для текущей схемы, потому что синхронизация идёт через Kafka.
-
-### Сценарий 3. Проверить `favorites`
-
-1. Создать пользователя через `POST /users`
-2. Добавить товар в избранное через `POST /favorites`
-3. Проверить список через `GET /favorites?user_id=...`
-4. Удалить товар из избранного через `DELETE /favorites/{product_id}?user_id=...`
-
-### Сценарий 4. Проверить `cart`
-
-1. Добавить товар в корзину через `POST /cart`
-2. Изменить количество через `PATCH /cart/{product_id}`
-3. Проверить корзину через `GET /cart?user_id=...`
-4. Удалить товар через `DELETE /cart/{product_id}?user_id=...`
-
-### Сценарий 5. Проверить `orders`
-
-1. Добавить товар в корзину
-2. Создать заказ через `POST /orders`
-3. Проверить заказ через `GET /orders?user_id=...`
-4. Проверить конкретный заказ через `GET /orders/{order_id}?user_id=...`
-5. Отменить заказ через `POST /orders/{order_id}/cancel?user_id=...`
-
-Что стоит отдельно проверить:
-
-- после создания заказа корзина очищается
-- заказ создаётся со статусом `created`
-- после отмены статус становится `cancelled`
-
-## Негативные сценарии
-
-### `insufficient_stock`
-
-Проверить заказ с количеством больше доступного остатка.
-
-Ожидаемое поведение:
-
-- HTTP `409`
-- error code `insufficient_stock`
-
-### `product_inactive`
-
-Проверить добавление в корзину или оформление заказа для товара с `is_active=false`.
-
-Ожидаемое поведение:
-
-- HTTP `409`
-- error code `product_inactive`
-
-### `product_archived`
-
-Проверить добавление в корзину или оформление заказа для товара с `is_archived=true`.
-
-Ожидаемое поведение:
-
-- HTTP `409`
-- error code `product_archived`
-
-### `cart_is_empty`
-
-Проверить `POST /orders` без `items` и с пустой корзиной пользователя.
-
-Ожидаемое поведение:
-
-- HTTP `400`
-- error code `cart_is_empty`
-
-### `invalid_quantity`
-
-Проверить:
-
-- `POST /cart` с `quantity=0`
-- `PATCH /cart/{product_id}` с `quantity=0`
-
-Ожидаемое поведение:
-
-- HTTP `400`
-- validation error в едином формате
-
-## Формат ошибок
-
-Во всех сервисах ошибки возвращаются в одном формате:
-
-```json
-{
-  "error": {
-    "code": "product_not_found",
-    "message": "Product not found"
-  }
-}
-```
-
-Примеры:
-
-```json
-{
-  "error": {
-    "code": "invalid_quantity",
-    "message": "quantity: Quantity must be greater than zero"
-  }
-}
-```
-
-```json
-{
-  "error": {
-    "code": "insufficient_stock",
-    "message": "Insufficient stock"
-  }
-}
-```
-
-```json
-{
-  "error": {
-    "code": "cart_is_empty",
-    "message": "Cart is empty and no order items were provided"
-  }
-}
-```
-
-Типовые error codes:
-
-- `product_not_found`
-- `invalid_quantity`
-- `insufficient_stock`
-- `product_inactive`
-- `product_archived`
-- `cart_is_empty`
-- `order_not_found`
-- `order_already_cancelled`
-
-## Бизнес-правила
-
-### Товары
-
-- товар нельзя создать с пустым `name`
-- товар нельзя создать или обновить с `price <= 0`
-- `stocks` не может быть отрицательным
-- архивный товар не должен одновременно быть активным
-- `supplier-service` — источник истины по остаткам
-
-### Customer-side поведение
-
-- `favorites` не влияет на `cart` и `orders`
-- неактивный товар нельзя добавить в корзину
-- архивный товар нельзя добавить в корзину
-- неактивный товар нельзя купить
-- архивный товар нельзя купить
-- нельзя оформить заказ с количеством больше доступного `stocks`
-- `POST /orders` может брать товары либо из корзины, либо из переданного массива `items`
-
-### Заказы
-
-- заказ создаётся со статусом `created`
-- заказ можно перевести в `cancelled`
-- в текущей реализации отмена заказа не возвращает stock обратно в `supplier-service`
-
-## Известные ограничения
-
-- между `supplier-service` и `customer-service` есть eventual consistency
-- сразу после создания товара или изменения stock локальная копия в `customer-service` может обновиться не мгновенно
-- отмена заказа не восстанавливает stock
-- проект ориентирован на локальное ручное тестирование, а не на production-ready сценарии
-
-## Ответы API, полезные для QA
-
-### List responses
-
-Списки возвращаются в формате:
-
-```json
-{
-  "items": [],
-  "count": 0
-}
-```
-
-Это относится, например, к:
-
-- `GET /suppliers`
-- `GET /warehouses`
-- `GET /products`
-- `GET /users`
-- `GET /favorites`
-- `GET /orders`
-
-### Cart response
-
-Корзина содержит:
-
-- `items`
-- `count`
-- `total_items_count`
-- `total_price`
-
-### Order response
-
-Заказ содержит:
-
-- `items`
-- `total_items_count`
-- `total_price`
-- `status`
-- `order_number`
-
-## На что обращать внимание при тестировании Kafka / eventual consistency
-
-- после `POST /products` товар может появиться в `customer-service` не сразу
-- после изменения stock в `supplier-service` остаток в `customer-service` тоже может обновиться с небольшой задержкой
-- после `POST /orders` остаток сначала уменьшается в `supplier-service`, затем обновляется в `customer-service`
-- для наблюдения событий удобно использовать `Kafka UI`
-
-Практически это значит:
-
-- если сразу после действия данные не совпадают, стоит повторить `GET` через короткий интервал
-- для негативных сценариев, завязанных на stock, лучше сначала убедиться, что локальная копия товара уже синхронизировалась
-
-## Примеры `curl`-запросов
-
-### Add to favorites
+Полезные команды:
 
 ```bash
-curl -X POST http://localhost:8001/favorites \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "product_id": 1
-  }'
+make down       # остановить
+make reset      # удалить локальные volumes и вернуть известные seed-данные
+make logs       # общие логи
+make smoke      # API/Kafka smoke
+make test       # backend + frontend tests
+make e2e        # headless Playwright в Docker
 ```
+
+`make reset` удаляет только Compose volumes этого проекта.
+
+## Test users and seed data
+
+После чистого `make reset` идентификаторы стабильны:
+
+| Роль | ID | Имя | Email |
+|---|---:|---|---|
+| Customer | 1 | Elena QA Customer | elena.customer@example.com |
+| Customer | 2 | Pavel QA Customer | pavel.customer@example.com |
+| Supplier | 1 | Atlas Demo Supplier | atlas.supplier@example.com |
+| Supplier | 2 | Northstar Demo Supplier | northstar.supplier@example.com |
+
+Seed создаёт 10 товаров двух поставщиков и три склада. В наборе есть товары с большим и малым остатком, два товара с нулевым остатком, архивный товар и неактивный товар. Повторный seed безопасен:
 
 ```bash
-curl "http://localhost:8001/favorites?user_id=1"
+make seed
 ```
 
-### Add to cart
+## Demo scenario
+
+Сценарий занимает около 5–10 минут:
+
+1. На главной выбрать Customer `#1`.
+2. Открыть каталог, сравнить projection и source stock, добавить `QA Laptop Pro` в корзину.
+3. Оформить заказ и обратить внимание на `Idempotency-Key`.
+4. На карточке дождаться `RESERVED`; показать polling, `ETag`, version, correlation ID, timeline и Dev Panel.
+5. Переключиться на Supplier `#1`, открыть заказ и нажать Confirm.
+6. Дождаться `CONFIRMED`, показать `StockFinalized` в timeline и изменение stock.
+7. Повторить создание и показать Reject либо Customer Cancel с release.
+8. Открыть QA Panel, Kafka UI и structured logs.
+
+## Running tests
+
+Все backend-тесты используют PostgreSQL; SQLite не применяется.
 
 ```bash
-curl -X POST http://localhost:8001/cart \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "product_id": 1,
-    "quantity": 2
-  }'
+# Полный backend-набор
+make backend-test
+
+# React Testing Library / Vitest
+make frontend-test
+
+# Playwright headless; stack должен быть запущен
+make e2e
+
+# API + Kafka smoke после запуска
+make smoke
+
+# Backend + frontend unit/integration
+make test
 ```
+
+Прямые Docker-команды:
 
 ```bash
-curl -X PATCH http://localhost:8001/cart/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "quantity": 3
-  }'
+docker compose --profile tools run --rm order-tests
+docker compose --profile tools run --rm supplier-tests
+docker compose --profile tools run --rm customer-tests
+docker compose --profile tools run --rm frontend-tests
+docker compose --profile tools run --rm e2e
+docker compose --profile tools run --rm smoke
 ```
+
+Локальный Playwright UI доступен при установленных Node.js/pnpm и браузерах Playwright:
 
 ```bash
-curl "http://localhost:8001/cart?user_id=1"
+cd e2e
+pnpm install
+pnpm exec playwright install
+pnpm test:ui
 ```
 
-### Create order
+## API
 
-Из корзины:
+- Supplier Swagger: http://localhost:8000/docs
+- Customer Swagger: http://localhost:8001/docs
+- Order Swagger: http://localhost:8002/docs
+- OpenAPI JSON: `/openapi.json` на соответствующем порту.
+
+Order mutations используют тестовые заголовки `X-Test-Role`, `X-Test-Subject-ID`, опциональный `X-Correlation-ID`, а также обязательный `If-Match` для confirm/reject/cancel. Create order требует `Idempotency-Key`.
+
+Актуальные примеры запросов находятся в [Postman collection](postman/Marketplace-QA-2.0.postman_collection.json).
+
+## Kafka
+
+| Topic | Назначение |
+|---|---|
+| `marketplace.stock.commands.v1` | reserve/finalize/release команды |
+| `marketplace.stock.events.v1` | результаты операций с остатками |
+| `marketplace.order.events.v1` | доменные события заказа |
+| `marketplace.order.dlq.v1` | необработанные stock commands/results |
+| `supplier-events` | legacy supplier events для audit-consumer |
+| `product-events` | обновление customer catalog projection |
+| `product-stock-events` | обновление stock в customer projection |
+
+Просмотр DLQ:
 
 ```bash
-curl -X POST http://localhost:8001/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1
-  }'
+make dlq
+docker compose --profile tools run --rm dlq-tools list --limit 50
 ```
 
-Напрямую по переданным товарам:
+Ручной replay сохраняет исходный event ID и требует явного `--yes`:
 
 ```bash
-curl -X POST http://localhost:8001/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "items": [
-      { "product_id": 1, "quantity": 1 },
-      { "product_id": 2, "quantity": 2 }
-    ]
-  }'
+docker compose --profile tools run --rm dlq-tools \
+  replay <dlq_record_id> --yes
 ```
+
+Перед replay проверьте inbox: повторная доставка безопасна только в границах реализованной deduplication.
+
+## Observability
+
+Order/supplier lifecycle компоненты пишут JSON logs с `order_id`, `event_id`, `correlation_id`, состояниями, версиями, попытками и результатом.
 
 ```bash
-curl "http://localhost:8001/orders?user_id=1"
+docker compose logs -f order-service
+docker compose logs -f supplier-service
+docker compose logs -f order-stock-events-consumer
+docker compose logs -f supplier-reservation-consumer
 ```
 
-### Cancel order
+Как проследить flow:
+
+1. скопировать `order_id` и `correlation_id` из Dev Panel;
+2. найти их в логах сервисов: `docker compose logs | grep '<correlation_id>'`;
+3. открыть Kafka UI и проверить stock commands/events;
+4. проверить order/supplier inbox и outbox через PostgreSQL либо соответствующие тесты.
+
+Health/readiness:
 
 ```bash
-curl -X POST "http://localhost:8001/orders/1/cancel?user_id=1"
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+curl http://localhost:8001/health
+curl http://localhost:8002/health
+curl http://localhost:8002/ready
 ```
 
-### Empty product name
+## QA artifacts
 
-```bash
-curl -X POST http://localhost:8000/products \
-  -H "Content-Type: application/json" \
-  -d '{
-    "supplier_id": 1,
-    "name": "   ",
-    "description": "Invalid product",
-    "price": 100,
-    "is_active": true,
-    "is_archived": false
-  }'
+- [AS IS requirements index](docs/requirements/00_index.md)
+- [TO BE vision](docs/to-be/01-vision-and-architecture-principles.md)
+- [MVP scope and scenarios](docs/to-be/02-mvp-scope-roles-and-user-scenarios.md)
+- [Frontend requirements](docs/to-be/03-frontend-functional-requirements.md)
+- [Order architecture](docs/to-be/04-order-service-architecture.md)
+- [Order state machine](docs/to-be/05-order-state-machine.md)
+- [Order contracts](docs/to-be/06-order-service-contracts.md)
+- [Test strategy](docs/qa/test-strategy.md)
+- [Critical checklist](docs/qa/critical-checklist.md)
+- [Sample bug reports](docs/qa/bug-examples.md)
+- [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Architecture diagrams](docs/architecture/README.md)
+
+## Project structure
+
+```text
+.
+├── frontend/             React + TypeScript QA UI
+├── order-service/        Order source of truth and lifecycle workers
+├── supplier-service/     Catalog, warehouses, stock and reservations
+├── customer-service/     Customer data, cart and catalog projection
+├── audit-consumer/       Legacy supplier event audit
+├── e2e/                  Playwright critical scenarios
+├── scripts/              Seed, smoke, recovery and DLQ tools
+├── postman/              Collection and local environment
+├── docs/                 Requirements, architecture and QA artifacts
+├── .github/workflows/    CI
+└── docker-compose.yml
 ```
 
-### Product price `<= 0`
+## Known limitations
 
-```bash
-curl -X POST http://localhost:8000/products \
-  -H "Content-Type: application/json" \
-  -d '{
-    "supplier_id": 1,
-    "name": "Broken product",
-    "description": "Invalid price",
-    "price": 0,
-    "is_active": true,
-    "is_archived": false
-  }'
-```
+Главные ограничения перечислены в [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md). В частности: нет полноценной авторизации, оплаты, доставки, partial fulfillment, Kubernetes и distributed tracing; UI использует polling вместо WebSocket; customer-service сохраняет упрощённую legacy-модель и не имеет Alembic migrations.
 
-### Add inactive or archived product to cart
+## Future improvements
 
-```bash
-curl -X POST http://localhost:8001/cart \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "product_id": 1,
-    "quantity": 1
-  }'
-```
+- вынести customer-service schema evolution в Alembic;
+- добавить отдельный read-only API для warehouse stock rows;
+- унифицировать structured logging legacy customer/audit компонентов;
+- добавить управляемый chaos-профиль для Kafka outage/recovery;
+- расширить contract testing без увеличения числа хрупких UI-тестов.
 
-### Update cart quantity to `0`
+## Author / purpose
 
-```bash
-curl -X PATCH http://localhost:8001/cart/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "quantity": 0
-  }'
-```
-
-### Create order with empty cart
-
-```bash
-curl -X POST http://localhost:8001/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1
-  }'
-```
+Marketplace-QA создан как учебный стенд и портфолио-проект для демонстрации практик manual/API/integration QA на реалистичной распределённой системе.

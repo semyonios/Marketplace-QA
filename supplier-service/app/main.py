@@ -1,14 +1,20 @@
 import logging
 from collections.abc import Generator
+from dataclasses import asdict
+from functools import partial
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
-from sqlalchemy import delete, inspect, select, text
+from fastapi.responses import JSONResponse
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import Base, SessionLocal, engine
+from .config import get_settings
+from .database import ReadinessCheckError, SessionLocal, check_readiness
 from .error_handlers import register_exception_handlers
 from .kafka_producer import publish_product_event, publish_product_stock_event, publish_supplier_event
+from .logging_config import configure_logging
+from .messaging.kafka import check_kafka_connectivity
 from .models import Product, Supplier, Warehouse, WarehouseProduct
 from .schemas import (
     ProductCreate,
@@ -25,24 +31,9 @@ from .schemas import (
     WarehouseRead,
     WarehouseUpdate,
 )
-from .stock_consumer import start_stock_consumer
 
-logging.basicConfig(level=logging.INFO)
-
-
-def ensure_supplier_schema() -> None:
-    Base.metadata.create_all(bind=engine)
-
-    inspector = inspect(engine)
-    if "products" not in inspector.get_table_names():
-        return
-
-    product_columns = {column["name"] for column in inspector.get_columns("products")}
-    with engine.begin() as connection:
-        if "is_active" not in product_columns:
-            connection.execute(text("ALTER TABLE products ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
-        if "is_archived" not in product_columns:
-            connection.execute(text("ALTER TABLE products ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
+settings = get_settings()
+configure_logging(settings)
 
 app = FastAPI(
     title="Сервис поставщика",
@@ -58,12 +49,15 @@ app = FastAPI(
 )
 
 register_exception_handlers(app)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    ensure_supplier_schema()
-    start_stock_consumer()
+app.state.readiness_checker = partial(
+    check_readiness,
+    application_settings=settings,
+    kafka_checker=partial(
+        check_kafka_connectivity,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        timeout_seconds=settings.readiness_timeout_seconds,
+    ),
+)
 
 
 
@@ -86,21 +80,37 @@ def serialize_product(product: Product) -> ProductRead:
         is_active=product.is_active,
         is_archived=product.is_archived,
         stocks=product.stocks,
+        reserved_stocks=product.reserved_stocks,
+        available_stocks=product.available_stocks,
         total_price=round(product.price * product.stocks, 2),
         created_at=product.created_at,
     )
 
 
 
-def recalculate_product_stocks(db: Session, product_id: int) -> Product | None:
-    product = db.get(Product, product_id)
+def recalculate_product_stocks(
+    db: Session,
+    product_id: int,
+    *,
+    commit: bool = True,
+) -> Product | None:
+    product = db.scalar(
+        select(Product)
+        .where(Product.id == product_id)
+        .with_for_update()
+    )
     if not product:
         return None
 
     stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
-    product.stocks = sum(row.stocks for row in stock_rows)
-    db.commit()
-    db.refresh(product)
+    total_stocks = sum(row.stocks for row in stock_rows)
+    if total_stocks < product.reserved_stocks:
+        raise HTTPException(status_code=409, detail="stock_below_active_reservation")
+    product.stocks = total_stocks
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(product)
     return product
 
 
@@ -117,6 +127,32 @@ def ensure_product_state(is_active: bool, is_archived: bool) -> None:
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get(
+    "/ready",
+    response_model=None,
+    summary="Проверка готовности",
+    description="Проверяет supplier DB, Alembic revision и Kafka metadata.",
+    tags=["Служебное API"],
+)
+def readiness() -> dict | JSONResponse:
+    try:
+        state = app.state.readiness_checker()
+    except ReadinessCheckError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "service": settings.service_name,
+                "dependencies": asdict(exc.state),
+            },
+        )
+    return {
+        "status": "ready",
+        "service": settings.service_name,
+        "dependencies": asdict(state),
+    }
 
 
 @app.post(
@@ -206,6 +242,10 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db)) -> Response
     if not supplier:
         raise HTTPException(status_code=404, detail="supplier_not_found")
 
+    has_products = db.scalar(select(Product.id).where(Product.supplier_id == supplier_id).limit(1))
+    if has_products is not None:
+        raise HTTPException(status_code=409, detail="supplier_has_products")
+
     payload = SupplierRead.model_validate(supplier).model_dump(mode="json")
     db.delete(supplier)
     db.commit()
@@ -292,12 +332,15 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)) -> Respon
     affected_product_ids = sorted({row.product_id for row in stock_rows})
     db.execute(delete(WarehouseProduct).where(WarehouseProduct.warehouse_id == warehouse_id))
     db.delete(warehouse)
+    recalculated_products: list[Product] = []
+    for product_id in affected_product_ids:
+        product = recalculate_product_stocks(db, product_id, commit=False)
+        if product:
+            recalculated_products.append(product)
     db.commit()
 
-    for product_id in affected_product_ids:
-        product = recalculate_product_stocks(db, product_id)
-        if product:
-            publish_product_stock_event("STOCK_REPLENISHED", product.id, product.stocks)
+    for product in recalculated_products:
+        publish_product_stock_event("STOCK_REPLENISHED", product.id, product.stocks)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -397,7 +440,6 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     if not warehouse:
         raise HTTPException(status_code=404, detail="warehouse_not_found")
 
-    updated_products: list[ProductRead] = []
     seen_product_ids: set[int] = set()
 
     for item in restock_in.items:
@@ -415,13 +457,18 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
             stock_row.stocks = item.stocks
         else:
             db.add(WarehouseProduct(warehouse_id=warehouse_id, product_id=item.product_id, stocks=item.stocks))
-        db.commit()
+        seen_product_ids.add(item.product_id)
 
-        recalculated = recalculate_product_stocks(db, item.product_id)
-        if recalculated and recalculated.id not in seen_product_ids:
-            publish_product_stock_event("STOCK_REPLENISHED", recalculated.id, recalculated.stocks)
-            updated_products.append(serialize_product(recalculated))
-            seen_product_ids.add(recalculated.id)
+    db.flush()
+    recalculated_products = [
+        product
+        for product_id in sorted(seen_product_ids)
+        if (product := recalculate_product_stocks(db, product_id, commit=False)) is not None
+    ]
+    db.commit()
+    updated_products = [serialize_product(product) for product in recalculated_products]
+    for product in recalculated_products:
+        publish_product_stock_event("STOCK_REPLENISHED", product.id, product.stocks)
 
     return ProductListRead(items=updated_products, count=len(updated_products))
 
@@ -431,7 +478,7 @@ def restock_products(warehouse_id: int, restock_in: RestockRequest, db: Session 
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     summary="Удалить товар",
-    description="Удаляет товар по идентификатору.",
+    description="Архивирует товар по идентификатору.",
     tags=["API товаров"],
 )
 def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
@@ -439,12 +486,11 @@ def delete_product(product_id: int, db: Session = Depends(get_db)) -> Response:
     if not product:
         raise HTTPException(status_code=404, detail="product_not_found")
 
-    stock_rows = list(db.scalars(select(WarehouseProduct).where(WarehouseProduct.product_id == product_id)))
-    for row in stock_rows:
-        db.delete(row)
+    product.is_active = False
+    product.is_archived = True
+    db.commit()
+    db.refresh(product)
 
     payload = serialize_product(product).model_dump(mode="json")
-    db.delete(product)
-    db.commit()
-    publish_product_event("PRODUCT_DELETED", payload)
+    publish_product_event("PRODUCT_UPDATED", payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

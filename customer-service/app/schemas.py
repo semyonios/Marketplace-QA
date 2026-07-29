@@ -1,4 +1,6 @@
+import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -17,6 +19,7 @@ class UserRead(UserCreate):
 
 class ProductRead(BaseModel):
     id: int
+    supplier_id: int | None
     name: str
     description: str | None
     price: float
@@ -29,6 +32,7 @@ class ProductRead(BaseModel):
 
 class ProductSummary(BaseModel):
     id: int
+    supplier_id: int | None
     name: str
     price: float
     stocks: int
@@ -86,10 +90,34 @@ class CartItemRead(BaseModel):
 
 
 class CartRead(BaseModel):
+    cart_id: uuid.UUID
+    cart_version: int
+    supplier_id: int | None
     items: list[CartItemRead]
     count: int
     total_items_count: int
     total_price: float
+
+
+class CartSnapshotItem(BaseModel):
+    product_id: int
+    product_name: str
+    supplier_id: int
+    quantity: int
+    unit_price: Decimal
+    currency: str
+    product_status: str
+    projected_available_quantity: int
+    projection_updated_at: datetime
+
+
+class CartSnapshotRead(BaseModel):
+    customer_id: int
+    cart_id: uuid.UUID
+    cart_version: int
+    supplier_id: int | None
+    items: list[CartSnapshotItem]
+    generated_at: datetime
 
 
 class OrderCreateItem(BaseModel):

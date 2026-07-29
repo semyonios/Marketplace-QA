@@ -1,8 +1,11 @@
 import logging
+import uuid
 from collections import defaultdict
 from collections.abc import Generator
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -11,12 +14,14 @@ from .database import Base, SessionLocal, engine
 from .error_handlers import register_exception_handlers
 from .kafka_consumers import start_consumers, sync_products_from_supplier
 from .kafka_producer import publish_order_created
-from .models import CartItem, Favorite, Order, OrderItem, Product, User
+from .models import CartItem, CartState, Favorite, Order, OrderItem, Product, User
 from .schemas import (
     CartCreate,
     CartItemRead,
     CartQuantityUpdate,
     CartRead,
+    CartSnapshotItem,
+    CartSnapshotRead,
     FavoriteCreate,
     FavoriteListRead,
     FavoriteRead,
@@ -35,6 +40,7 @@ from .schemas import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+MONEY_QUANT = Decimal("0.01")
 
 app = FastAPI(
     title="Сервис покупателя",
@@ -69,12 +75,26 @@ def ensure_customer_schema() -> None:
             connection.execute(text("ALTER TABLE orders ALTER COLUMN product_id DROP NOT NULL"))
             connection.execute(text("ALTER TABLE orders ALTER COLUMN quantity DROP NOT NULL"))
 
-    product_columns = {column["name"] for column in inspector.get_columns("products")} if "products" in inspector.get_table_names() else set()
+    product_column_definitions = (
+        {column["name"]: column for column in inspector.get_columns("products")}
+        if "products" in inspector.get_table_names()
+        else {}
+    )
     with engine.begin() as connection:
-        if "is_active" not in product_columns:
+        if "is_active" not in product_column_definitions:
             connection.execute(text("ALTER TABLE products ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
-        if "is_archived" not in product_columns:
+        if "is_archived" not in product_column_definitions:
             connection.execute(text("ALTER TABLE products ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE"))
+        if "supplier_id" not in product_column_definitions:
+            connection.execute(text("ALTER TABLE products ADD COLUMN supplier_id BIGINT"))
+        if "updated_at" not in product_column_definitions:
+            connection.execute(text("ALTER TABLE products ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
+        price_type = str(product_column_definitions.get("price", {}).get("type", "")).upper()
+        if price_type and "NUMERIC" not in price_type:
+            connection.execute(
+                text("ALTER TABLE products ALTER COLUMN price TYPE NUMERIC(19,2) USING round(price::numeric, 2)")
+            )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_products_supplier_id ON products (supplier_id)"))
 
 
 @app.on_event("startup")
@@ -92,9 +112,38 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def normalize_money(value: Decimal | float | int | str) -> Decimal:
+    return Decimal(str(value)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+
+def get_or_create_cart_state(
+    db: Session,
+    user_id: int,
+    *,
+    lock: bool = False,
+) -> tuple[CartState, bool]:
+    statement = select(CartState).where(CartState.user_id == user_id)
+    if lock:
+        statement = statement.with_for_update()
+    cart_state = db.scalar(statement)
+    if cart_state is not None:
+        return cart_state, False
+
+    cart_state = CartState(user_id=user_id, version=1)
+    db.add(cart_state)
+    db.flush()
+    return cart_state, True
+
+
+def mark_cart_mutated(cart_state: CartState, *, newly_created: bool) -> None:
+    if not newly_created:
+        cart_state.version += 1
+
+
 def serialize_product(product: Product) -> ProductRead:
     return ProductRead(
         id=product.id,
+        supplier_id=product.supplier_id,
         name=product.name,
         description=product.description,
         price=product.price,
@@ -109,6 +158,7 @@ def serialize_product(product: Product) -> ProductRead:
 def serialize_product_summary(product: Product) -> ProductSummary:
     return ProductSummary(
         id=product.id,
+        supplier_id=product.supplier_id,
         name=product.name,
         price=product.price,
         stocks=product.stocks,
@@ -141,9 +191,21 @@ def serialize_cart_item(db: Session, cart_item: CartItem) -> CartItemRead:
     )
 
 
-def serialize_cart(db: Session, cart_items: list[CartItem]) -> CartRead:
+def serialize_cart(db: Session, cart_items: list[CartItem], *, user_id: int) -> CartRead:
     items = [serialize_cart_item(db, cart_item) for cart_item in cart_items]
+    cart_state, newly_created = get_or_create_cart_state(db, user_id)
+    if newly_created:
+        db.commit()
+        db.refresh(cart_state)
+    supplier_ids = {
+        item.product.supplier_id
+        for item in items
+        if item.product.supplier_id is not None
+    }
     return CartRead(
+        cart_id=cart_state.id,
+        cart_version=cart_state.version,
+        supplier_id=next(iter(supplier_ids)) if len(supplier_ids) == 1 else None,
         items=items,
         count=len(items),
         total_items_count=sum(item.quantity for item in items),
@@ -203,6 +265,8 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
     user = User(**user_in.model_dump())
     db.add(user)
     try:
+        db.flush()
+        db.add(CartState(user_id=user.id, version=1))
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -321,7 +385,104 @@ def delete_favorite(product_id: int, user_id: int, db: Session = Depends(get_db)
 def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
     validate_user(db, user_id)
     cart_items = list(db.scalars(select(CartItem).where(CartItem.user_id == user_id).order_by(CartItem.id)))
-    return serialize_cart(db, cart_items)
+    return serialize_cart(db, cart_items, user_id=user_id)
+
+
+@app.get(
+    "/internal/v1/customers/{customer_id}/cart/snapshot",
+    response_model=CartSnapshotRead,
+    summary="Получить server-side snapshot корзины",
+    description="Внутренний контракт order-service; не предназначен для вызова frontend.",
+    tags=["Служебное API"],
+)
+def get_cart_snapshot(
+    customer_id: int,
+    response: Response,
+    expected_version: int = Query(gt=0),
+    x_internal_service: str | None = Header(default=None, alias="X-Internal-Service"),
+    x_correlation_id: str | None = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+) -> CartSnapshotRead:
+    if x_internal_service != "order-service":
+        raise HTTPException(status_code=403, detail="internal_access_forbidden")
+    try:
+        correlation_id = str(uuid.UUID(x_correlation_id)) if x_correlation_id else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_request") from exc
+    if correlation_id is None:
+        raise HTTPException(status_code=400, detail="invalid_request")
+    if customer_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid_customer_id")
+    if db.get(User, customer_id) is None:
+        raise HTTPException(status_code=404, detail="customer_not_found")
+
+    cart_state, newly_created = get_or_create_cart_state(db, customer_id, lock=True)
+    if newly_created:
+        db.commit()
+        db.refresh(cart_state)
+    if cart_state.version != expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cart_version_conflict",
+                "message": "Cart version changed",
+                "details": {"current_version": cart_state.version},
+            },
+        )
+
+    generated_at = datetime.now(timezone.utc)
+    cart_items = list(
+        db.scalars(select(CartItem).where(CartItem.user_id == customer_id).order_by(CartItem.id))
+    )
+    snapshot_items: list[CartSnapshotItem] = []
+    supplier_ids: set[int] = set()
+    for index, cart_item in enumerate(cart_items):
+        if cart_item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_quantity",
+                    "message": "Cart item quantity must be positive",
+                    "details": {"item_index": index, "product_id": cart_item.product_id},
+                },
+            )
+        product = db.get(Product, cart_item.product_id)
+        if product is None:
+            raise HTTPException(status_code=503, detail="dependency_unavailable")
+        if product.supplier_id is None or product.supplier_id <= 0:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "dependency_unavailable",
+                    "message": "Product supplier projection is unavailable",
+                    "details": {"product_id": product.id},
+                },
+            )
+        supplier_ids.add(product.supplier_id)
+        product_status = "ARCHIVED" if product.is_archived else ("ACTIVE" if product.is_active else "INACTIVE")
+        snapshot_items.append(
+            CartSnapshotItem(
+                product_id=product.id,
+                product_name=product.name,
+                supplier_id=product.supplier_id,
+                quantity=cart_item.quantity,
+                unit_price=normalize_money(product.price),
+                currency="RUB",
+                product_status=product_status,
+                projected_available_quantity=product.stocks,
+                projection_updated_at=product.updated_at or product.created_at or generated_at,
+            )
+        )
+
+    response.headers["X-Correlation-ID"] = correlation_id
+    return CartSnapshotRead(
+        customer_id=customer_id,
+        cart_id=cart_state.id,
+        cart_version=cart_state.version,
+        supplier_id=next(iter(supplier_ids)) if len(supplier_ids) == 1 else None,
+        items=snapshot_items,
+        generated_at=generated_at,
+    )
 
 
 @app.post(
@@ -335,6 +496,19 @@ def get_cart(user_id: int, db: Session = Depends(get_db)) -> CartRead:
 def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_in.user_id, cart_in.product_id)
     ensure_product_can_be_purchased(product)
+    cart_state, newly_created = get_or_create_cart_state(db, cart_in.user_id, lock=True)
+    cart_supplier_id = db.scalar(
+        select(Product.supplier_id)
+        .join(CartItem, CartItem.product_id == Product.id)
+        .where(CartItem.user_id == cart_in.user_id)
+        .limit(1)
+    )
+    if (
+        cart_supplier_id is not None
+        and product.supplier_id is not None
+        and cart_supplier_id != product.supplier_id
+    ):
+        raise HTTPException(status_code=409, detail="multi_supplier_cart")
     cart_item = db.scalar(
         select(CartItem).where(CartItem.user_id == cart_in.user_id, CartItem.product_id == cart_in.product_id)
     )
@@ -348,6 +522,7 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
         cart_item = CartItem(**cart_in.model_dump())
         db.add(cart_item)
 
+    mark_cart_mutated(cart_state, newly_created=newly_created)
     db.commit()
     db.refresh(cart_item)
     return serialize_cart_item(db, cart_item)
@@ -363,12 +538,14 @@ def add_to_cart(cart_in: CartCreate, db: Session = Depends(get_db)) -> CartItemR
 def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Session = Depends(get_db)) -> CartItemRead:
     product = validate_user_and_product(db, cart_update.user_id, product_id)
     ensure_product_can_be_purchased(product)
+    cart_state, newly_created = get_or_create_cart_state(db, cart_update.user_id, lock=True)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == cart_update.user_id, CartItem.product_id == product_id))
     if not cart_item:
         raise HTTPException(status_code=404, detail="cart_item_not_found")
 
     ensure_requested_quantity_available(cart_update.quantity, product.stocks, product_id)
     cart_item.quantity = cart_update.quantity
+    mark_cart_mutated(cart_state, newly_created=newly_created)
     db.commit()
     db.refresh(cart_item)
     return serialize_cart_item(db, cart_item)
@@ -384,10 +561,12 @@ def update_cart_item(product_id: int, cart_update: CartQuantityUpdate, db: Sessi
 )
 def delete_cart_item(product_id: int, user_id: int, db: Session = Depends(get_db)) -> Response:
     validate_user(db, user_id)
+    cart_state, newly_created = get_or_create_cart_state(db, user_id, lock=True)
     cart_item = db.scalar(select(CartItem).where(CartItem.user_id == user_id, CartItem.product_id == product_id))
     if not cart_item:
         raise HTTPException(status_code=404, detail="cart_item_not_found")
     db.delete(cart_item)
+    mark_cart_mutated(cart_state, newly_created=newly_created)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -431,8 +610,14 @@ def create_order(order_in: OrderCreate, db: Session = Depends(get_db)) -> OrderR
     order.order_number = generate_order_number(order.id)
 
     cart_items = list(db.scalars(select(CartItem).where(CartItem.user_id == order_in.user_id)))
+    cart_state: CartState | None = None
+    cart_state_created = False
+    if cart_items:
+        cart_state, cart_state_created = get_or_create_cart_state(db, order_in.user_id, lock=True)
     for cart_item in cart_items:
         db.delete(cart_item)
+    if cart_state is not None:
+        mark_cart_mutated(cart_state, newly_created=cart_state_created)
 
     db.commit()
     db.refresh(order)
